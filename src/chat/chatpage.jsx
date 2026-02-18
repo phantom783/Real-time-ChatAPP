@@ -1679,6 +1679,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       ? "Online"
       : "Offline";
   const activeChatInitial = activeChatName ? activeChatName.charAt(0).toUpperCase() : "#";
+  const hasActiveConversation = Boolean(selectedRoom || selectedUser);
   const currentUserAvatarUrl = getUserAvatarUrl(currentUserProfile);
   const activeChatAvatarUrl = selectedRoom ? "" : getUserAvatarUrl(selectedUser);
   const totalUnreadCount = useMemo(
@@ -1856,7 +1857,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   };
 
   return (
-    <div className="chat-container">
+    <div className={`chat-container ${hasActiveConversation ? "chat-open" : ""}`}>
       <div className="chat-sidebar">
         <div className="sidebar-header">
           <h2>ChatApp</h2>
@@ -1926,7 +1927,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         <div className="sidebar-content">{isLoading ? <div className="empty-state">Loading...</div> : renderSidebarContent()}</div>
       </div>
 
-      {selectedRoom || selectedUser ? (
+      {hasActiveConversation ? (
         <div className="chat-main has-chat">
           <div
             className="chat-header"
@@ -1940,6 +1941,22 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
             title={selectedUser ? "View Profile" : ""}
           >
             <div className="chat-user">
+              <button
+                className="icon-btn mobile-back-btn"
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSelectedRoom(null);
+                  setSelectedUser(null);
+                  setMessages([]);
+                  setShowEmojiPicker(false);
+                  setShowRoomInfo(false);
+                }}
+                aria-label="Back to conversations"
+                title="Back to conversations"
+              >
+                &#8592;
+              </button>
               <div className="chat-user-avatar">
                 {activeChatAvatarUrl ? (
                   <img

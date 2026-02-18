@@ -2164,3 +2164,289 @@ body {
   background-color: rgba(244, 67, 54, 1);
   box-shadow: 0 4px 12px rgba(244, 67, 54, 0.3);
 }
+
+.mobile-back-btn {
+  display: none;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 10px;
+  font-size: 1rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+@media (max-width: 1100px) {
+  .chat-container {
+    width: calc(100vw - 1rem);
+    height: calc(100dvh - 1rem);
+    margin: 0.5rem auto;
+    border-radius: 1.35rem;
+  }
+
+  .chat-sidebar {
+    width: 290px;
+    min-width: 290px;
+  }
+
+  .sidebar-header {
+    padding: 1.35rem 1rem;
+  }
+
+  .user-profile-mini {
+    padding: 0 1rem 1rem;
+  }
+
+  .messages-container {
+    padding: 1rem;
+  }
+}
+
+@media (max-width: 900px) {
+  .chat-container {
+    width: 100%;
+    height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+
+  .chat-sidebar,
+  .chat-main {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .chat-sidebar {
+    border-right: none;
+  }
+
+  .chat-container.chat-open .chat-sidebar {
+    display: none;
+  }
+
+  .chat-container.chat-open .chat-main {
+    display: flex;
+  }
+
+  .chat-container:not(.chat-open) .chat-main {
+    display: none;
+  }
+
+  .mobile-back-btn {
+    display: inline-flex;
+  }
+
+  .chat-header {
+    padding: 0.85rem 0.9rem;
+    gap: 0.6rem;
+  }
+
+  .chat-user {
+    gap: 0.55rem;
+  }
+
+  .chat-user-avatar {
+    width: 36px;
+    height: 36px;
+  }
+
+  .chat-user-meta h2 {
+    font-size: 0.98rem;
+  }
+
+  .chat-user-meta p {
+    font-size: 0.76rem;
+  }
+
+  .chat-actions {
+    gap: 0.35rem;
+  }
+
+  .call-action-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+
+  .messages-container {
+    padding: 0.9rem 0.75rem;
+    gap: 0.9rem;
+  }
+
+  .message {
+    max-width: 90%;
+  }
+
+  .chat-input-area {
+    padding: 0.7rem 0.75rem;
+  }
+
+  .input-wrapper {
+    gap: 0.55rem;
+    padding: 0.55rem 0.65rem;
+    border-radius: 1rem;
+  }
+
+  .chat-input {
+    min-height: 40px;
+    max-height: 140px;
+    padding: 0.55rem 0.4rem;
+    font-size: 16px;
+  }
+
+  .emoji-open-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  .send-btn {
+    min-width: 62px;
+    height: 40px;
+    padding: 0 0.8rem;
+    font-size: 0.86rem;
+  }
+
+  .sidebar-tabs {
+    padding: 0 0.75rem 0.75rem;
+  }
+
+  .tab-btn {
+    padding: 0.65rem 0.4rem;
+    font-size: 0.8rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .sidebar-header {
+    padding: 1rem 0.9rem;
+  }
+
+  .sidebar-header h2 {
+    font-size: 1.4rem;
+  }
+
+  .user-profile-mini {
+    padding: 0 0.9rem 0.9rem;
+  }
+
+  .list-header {
+    padding: 0.45rem 0.75rem;
+    margin: 0.35rem 0.35rem 0.2rem;
+  }
+
+  .list-item {
+    padding: 0.7rem 0.75rem;
+    margin: 0 0.35rem 0.2rem;
+  }
+
+  .item-avatar {
+    width: 36px;
+    height: 36px;
+  }
+
+  .item-name {
+    font-size: 0.9rem;
+  }
+
+  .item-status {
+    font-size: 0.75rem;
+  }
+
+  .chat-header {
+    padding: 0.75rem 0.7rem;
+  }
+
+  .chat-actions {
+    gap: 0.3rem;
+  }
+
+  .icon-btn {
+    font-size: 1rem;
+  }
+
+  .msg-bubble {
+    padding: 0.78rem 0.9rem;
+    border-radius: 1rem;
+    line-height: 1.5;
+  }
+
+  .msg-sender {
+    font-size: 0.75rem;
+  }
+
+  .msg-time {
+    font-size: 0.64rem;
+  }
+
+  .message {
+    max-width: 93%;
+  }
+
+  .no-chat {
+    padding: 1rem;
+  }
+
+  .no-chat-icon {
+    margin-bottom: 1rem;
+  }
+
+  .no-chat-icon-svg {
+    width: 64px;
+    height: 64px;
+  }
+
+  .no-chat h2 {
+    font-size: 1.25rem;
+    margin-bottom: 0.5rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .chat-user {
+    min-width: 0;
+  }
+
+  .chat-user-meta {
+    min-width: 0;
+    max-width: 42vw;
+  }
+
+  .chat-user-meta h2 {
+    font-size: 0.92rem;
+  }
+
+  .chat-user-meta p {
+    font-size: 0.72rem;
+  }
+
+  .chat-actions .icon-btn {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+  }
+
+  .chat-actions button:last-child {
+    min-width: auto;
+    padding: 0.45rem 0.55rem;
+    font-size: 0.75rem;
+  }
+
+  .sidebar-tabs {
+    gap: 0.35rem;
+  }
+
+  .tab-btn {
+    font-size: 0.75rem;
+  }
+
+  .input-wrapper {
+    gap: 0.45rem;
+  }
+
+  .send-btn {
+    min-width: 56px;
+    padding: 0 0.65rem;
+  }
+}
