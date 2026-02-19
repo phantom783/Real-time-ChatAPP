@@ -902,7 +902,6 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         }
       }
 
-      queuedIceCandidatesRef.current = [];
       const peerConnection = new RTCPeerConnection(WEBRTC_CONFIGURATION);
 
       peerConnection.onicecandidate = (event) => {
@@ -955,6 +954,23 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
 
         if (state === "closed") {
           endActiveCall({ notifyPeer: false, reason: state });
+        }
+      };
+
+      peerConnection.oniceconnectionstatechange = () => {
+        const iceState = peerConnection.iceConnectionState;
+
+        if (iceState === "connected" || iceState === "completed") {
+          setCallState((previous) => ({ ...previous, status: "connected" }));
+          return;
+        }
+
+        if (iceState === "failed") {
+          endActiveCall({
+            notifyPeer: false,
+            reason: "failed",
+            errorMessage: "Call connection failed. Check your network or TURN server settings.",
+          });
         }
       };
 
@@ -1013,6 +1029,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       const callId = buildCallId(currentUserId);
 
       try {
+        queuedIceCandidatesRef.current = [];
         const stream = await requestLocalMedia(callType);
         const peerConnection = createPeerConnection(peerUserId, callId, callType);
 
@@ -1434,6 +1451,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         return;
       }
 
+      queuedIceCandidatesRef.current = [];
       pendingIncomingCallRef.current = {
         fromUserId,
         callType: incomingCallType,
