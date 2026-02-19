@@ -47,6 +47,7 @@ function getMessageTextPreview(content, maxLength = 120) {
 function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onReply, onDelete }) {
   const [showReactionBar, setShowReactionBar] = useState(false);
   const longPressTimerRef = useRef(null);
+  const messageRef = useRef(null);
 
   const senderId = getUserId(message.senderUserId);
   const isMine = senderId === currentUserId || senderId === "";
@@ -84,6 +85,35 @@ function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onR
     };
   }, [clearLongPress]);
 
+  useEffect(() => {
+    if (!showReactionBar) {
+      return undefined;
+    }
+
+    const closeIfOutside = (event) => {
+      if (messageRef.current?.contains(event.target)) {
+        return;
+      }
+      setShowReactionBar(false);
+    };
+
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") {
+        setShowReactionBar(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closeIfOutside);
+    document.addEventListener("contextmenu", closeIfOutside);
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.removeEventListener("pointerdown", closeIfOutside);
+      document.removeEventListener("contextmenu", closeIfOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [showReactionBar]);
+
   const onTouchStart = useCallback(() => {
     clearLongPress();
     longPressTimerRef.current = window.setTimeout(() => {
@@ -97,15 +127,11 @@ function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onR
 
   return (
     <article
+      ref={messageRef}
       className={`message wa-message ${isMine ? "sent" : "received"}`}
-      onMouseEnter={() => setShowReactionBar(true)}
-      onMouseLeave={() => setShowReactionBar(false)}
-      onFocus={() => setShowReactionBar(true)}
-      onBlur={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget)) {
-          return;
-        }
-        setShowReactionBar(false);
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setShowReactionBar(true);
       }}
       onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
@@ -114,6 +140,10 @@ function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onR
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           setShowReactionBar(false);
+        }
+        if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+          event.preventDefault();
+          setShowReactionBar(true);
         }
       }}
       tabIndex={0}
@@ -154,7 +184,10 @@ function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onR
             onMouseDown={(event) => {
               event.preventDefault();
             }}
-            onClick={() => onReply?.(message)}
+            onClick={() => {
+              onReply?.(message);
+              setShowReactionBar(false);
+            }}
             aria-label="Reply to message"
             title="Reply"
           >
@@ -168,7 +201,10 @@ function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onR
             onMouseDown={(event) => {
               event.preventDefault();
             }}
-            onClick={() => onDelete?.(message)}
+            onClick={() => {
+              onDelete?.(message);
+              setShowReactionBar(false);
+            }}
             aria-label="Delete message"
             title="Delete message"
           >
