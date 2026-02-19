@@ -2746,7 +2746,6 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
                       openSenderProfile(user);
                     }}
                     aria-label={`View ${user.displayName} profile`}
-                    title="View profile"
                     style={userAvatarUrl ? { backgroundImage: `url("${userAvatarUrl}")` } : undefined}
                   >
                     {!userAvatarUrl ? user.displayName?.charAt(0).toUpperCase() : null}
@@ -2852,7 +2851,6 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
               }
             }}
             style={{ cursor: selectedUser ? "pointer" : "default" }}
-            title={selectedUser ? "View Profile" : ""}
           >
             <div className="chat-user">
               <button
