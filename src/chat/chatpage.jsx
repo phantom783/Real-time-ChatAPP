@@ -564,6 +564,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   const [newRoomName, setNewRoomName] = useState("");
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [activeTab, setActiveTab] = useState("chats");
+  const [sidebarSearch, setSidebarSearch] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [isSendingAttachment, setIsSendingAttachment] = useState(false);
   const [userFollowStatus, setUserFollowStatus] = useState({});
@@ -2566,6 +2567,22 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     () => Object.values(unreadCounts).reduce((sum, count) => sum + count, 0),
     [unreadCounts],
   );
+  const normalizedSidebarSearch = sidebarSearch.trim().toLowerCase();
+  const filteredUsers = useMemo(() => {
+    if (!normalizedSidebarSearch) {
+      return users;
+    }
+
+    return users.filter((user) => getUserDisplayName(user).toLowerCase().includes(normalizedSidebarSearch));
+  }, [normalizedSidebarSearch, users]);
+  const filteredRooms = useMemo(() => {
+    if (!normalizedSidebarSearch) {
+      return rooms;
+    }
+
+    return rooms.filter((room) => String(room.roomName || "").toLowerCase().includes(normalizedSidebarSearch));
+  }, [normalizedSidebarSearch, rooms]);
+  const sidebarSearchPlaceholder = activeTab === "people" ? "Search users" : "Search rooms or users";
   const isCallIdle = callState.status === "idle";
   const callPeerName =
     callState.peerName || resolvePeerName(callState.peerUserId, selectedUser?.displayName || "");
@@ -2625,7 +2642,11 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     }
 
     if (activeTab === "people") {
-      return users.map((user) => (
+      if (filteredUsers.length === 0) {
+        return <div className="empty-state">No users found.</div>;
+      }
+
+      return filteredUsers.map((user) => (
         (() => {
           const avatarUrl = getUserAvatarUrl(user);
 
@@ -2682,89 +2703,97 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         )}
 
         <div className="list-header">Rooms</div>
-        {rooms.map((room) => (
-          (() => {
-            const roomNotificationKey = buildRoomNotificationKey(String(room._id));
-            const roomUnreadCount = unreadCounts[roomNotificationKey] || 0;
+        {filteredRooms.length === 0 ? (
+          <div className="empty-state">No rooms found.</div>
+        ) : (
+          filteredRooms.map((room) => (
+            (() => {
+              const roomNotificationKey = buildRoomNotificationKey(String(room._id));
+              const roomUnreadCount = unreadCounts[roomNotificationKey] || 0;
 
-            return (
-              <div
-                key={room._id}
-                className={`list-item ${selectedRoom?._id === room._id ? "active" : ""}`}
-                onClick={() => {
-                  clearUnreadForKey(roomNotificationKey);
-                  setSelectedRoom(room);
-                  setSelectedUser(null);
-                  setShowEmojiPicker(false);
-                  setRoomMemberError("");
-                  setRoomMemberAction({ type: "", userId: "" });
-                }}
-              >
-                <div className="item-avatar">#</div>
-                <div className="item-info">
-                  <div className="item-name">{room.roomName}</div>
-                  <div className="item-status-row">
-                    <div className="item-status">{room.members?.length || 0} members</div>
-                    {roomUnreadCount > 0 && (
-                      <span className="unread-badge">{roomUnreadCount > 99 ? "99+" : roomUnreadCount}</span>
-                    )}
+              return (
+                <div
+                  key={room._id}
+                  className={`list-item ${selectedRoom?._id === room._id ? "active" : ""}`}
+                  onClick={() => {
+                    clearUnreadForKey(roomNotificationKey);
+                    setSelectedRoom(room);
+                    setSelectedUser(null);
+                    setShowEmojiPicker(false);
+                    setRoomMemberError("");
+                    setRoomMemberAction({ type: "", userId: "" });
+                  }}
+                >
+                  <div className="item-avatar">#</div>
+                  <div className="item-info">
+                    <div className="item-name">{room.roomName}</div>
+                    <div className="item-status-row">
+                      <div className="item-status">{room.members?.length || 0} members</div>
+                      {roomUnreadCount > 0 && (
+                        <span className="unread-badge">{roomUnreadCount > 99 ? "99+" : roomUnreadCount}</span>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })()
-        ))}
+              );
+            })()
+          ))
+        )}
 
         <div className="list-header" style={{ marginTop: "1rem" }}>
           Direct Messages
         </div>
-        {users.map((user) => (
-          (() => {
-            const userNotificationKey = buildDmNotificationKey(String(user._id));
-            const userUnreadCount = unreadCounts[userNotificationKey] || 0;
-            const userAvatarUrl = getUserAvatarUrl(user);
+        {filteredUsers.length === 0 ? (
+          <div className="empty-state">No users found.</div>
+        ) : (
+          filteredUsers.map((user) => (
+            (() => {
+              const userNotificationKey = buildDmNotificationKey(String(user._id));
+              const userUnreadCount = unreadCounts[userNotificationKey] || 0;
+              const userAvatarUrl = getUserAvatarUrl(user);
 
-            return (
-              <div
-                key={user._id}
-                className={`list-item ${selectedUser?._id === user._id ? "active" : ""}`}
-                onClick={() => {
-                  clearUnreadForKey(userNotificationKey);
-                  setSelectedUser(user);
-                  setSelectedRoom(null);
-                  setShowEmojiPicker(false);
-                  setShowRoomInfo(false);
-                  setRoomMemberError("");
-                  setRoomMemberAction({ type: "", userId: "" });
-                }}
-              >
-                <div className="item-info item-info--dm">
-                  <button
-                    className="item-avatar item-avatar-btn"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openSenderProfile(user);
-                    }}
-                    aria-label={`View ${user.displayName} profile`}
-                    style={userAvatarUrl ? { backgroundImage: `url("${userAvatarUrl}")` } : undefined}
-                  >
-                    {!userAvatarUrl ? user.displayName?.charAt(0).toUpperCase() : null}
-                  </button>
-                  <div className="item-copy">
-                    <div className="item-name">{user.displayName}</div>
-                    <div className="item-status item-status--dm">
-                      <span className={`item-status-dot ${user.onlineStatus ? "online" : "offline"}`} />
-                      {user.onlineStatus ? "Online" : "Offline"}
+              return (
+                <div
+                  key={user._id}
+                  className={`list-item ${selectedUser?._id === user._id ? "active" : ""}`}
+                  onClick={() => {
+                    clearUnreadForKey(userNotificationKey);
+                    setSelectedUser(user);
+                    setSelectedRoom(null);
+                    setShowEmojiPicker(false);
+                    setShowRoomInfo(false);
+                    setRoomMemberError("");
+                    setRoomMemberAction({ type: "", userId: "" });
+                  }}
+                >
+                  <div className="item-info item-info--dm">
+                    <button
+                      className="item-avatar item-avatar-btn"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openSenderProfile(user);
+                      }}
+                      aria-label={`View ${user.displayName} profile`}
+                      style={userAvatarUrl ? { backgroundImage: `url("${userAvatarUrl}")` } : undefined}
+                    >
+                      {!userAvatarUrl ? user.displayName?.charAt(0).toUpperCase() : null}
+                    </button>
+                    <div className="item-copy">
+                      <div className="item-name">{user.displayName}</div>
+                      <div className="item-status item-status--dm">
+                        <span className={`item-status-dot ${user.onlineStatus ? "online" : "offline"}`} />
+                        {user.onlineStatus ? "Online" : "Offline"}
+                      </div>
                     </div>
                   </div>
+                  {userUnreadCount > 0 && (
+                    <span className="unread-badge">{userUnreadCount > 99 ? "99+" : userUnreadCount}</span>
+                  )}
                 </div>
-                {userUnreadCount > 0 && (
-                  <span className="unread-badge">{userUnreadCount > 99 ? "99+" : userUnreadCount}</span>
-                )}
-              </div>
-            );
-          })()
-        ))}
+              );
+            })()
+          ))
+        )}
       </>
     );
   };
@@ -2836,6 +2865,29 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
             Requests
           </button>
         </div>
+
+        {activeTab !== "requests" && (
+          <div className="sidebar-search-wrap">
+            <input
+              className="sidebar-search-input"
+              type="text"
+              value={sidebarSearch}
+              onChange={(event) => setSidebarSearch(event.target.value)}
+              placeholder={sidebarSearchPlaceholder}
+              aria-label={sidebarSearchPlaceholder}
+            />
+            {sidebarSearch && (
+              <button
+                type="button"
+                className="sidebar-search-clear"
+                onClick={() => setSidebarSearch("")}
+                aria-label="Clear search"
+              >
+                X
+              </button>
+            )}
+          </div>
+        )}
 
         <div className="sidebar-content">{isLoading ? <div className="empty-state">Loading...</div> : renderSidebarContent()}</div>
       </div>
