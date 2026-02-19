@@ -44,7 +44,7 @@ function getMessageTextPreview(content, maxLength = 120) {
   return `${text.slice(0, maxLength - 3)}...`;
 }
 
-function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onReply }) {
+function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onReply, onDelete }) {
   const [showReactionBar, setShowReactionBar] = useState(false);
   const longPressTimerRef = useRef(null);
 
@@ -145,7 +145,7 @@ function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onR
         </span>
       </div>
 
-      <div className={`wa-message-actions ${showReactionBar ? "visible" : ""}`}>
+      <div className={`wa-message-actions ${showReactionBar ? "visible" : ""} ${isMine ? "mine" : "theirs"}`}>
         <ReactionBar visible={showReactionBar} activeEmoji={myReaction} onSelect={onReactionSelect} />
         {showReactionBar && (
           <button
@@ -159,6 +159,20 @@ function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onR
             title="Reply"
           >
             Reply
+          </button>
+        )}
+        {showReactionBar && onDelete && (
+          <button
+            type="button"
+            className="wa-delete-action"
+            onMouseDown={(event) => {
+              event.preventDefault();
+            }}
+            onClick={() => onDelete?.(message)}
+            aria-label="Delete message"
+            title="Delete message"
+          >
+            Delete
           </button>
         )}
       </div>
@@ -190,7 +204,8 @@ const MemoMessageItem = memo(
     prevProps.currentUserId === nextProps.currentUserId &&
     prevProps.onReact === nextProps.onReact &&
     prevProps.onOpenSenderProfile === nextProps.onOpenSenderProfile &&
-    prevProps.onReply === nextProps.onReply,
+    prevProps.onReply === nextProps.onReply &&
+    prevProps.onDelete === nextProps.onDelete,
 );
 
 export default MemoMessageItem;

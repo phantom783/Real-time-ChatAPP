@@ -382,6 +382,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   const [roomError, setRoomError] = useState("");
   const [roomMemberError, setRoomMemberError] = useState("");
   const [roomMemberAction, setRoomMemberAction] = useState({ type: "", userId: "" });
+  const [isClearingConversation, setIsClearingConversation] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [showProfileEdit, setShowProfileEdit] = useState(false);
   const [showProfileView, setShowProfileView] = useState(false);
@@ -1031,6 +1032,64 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       });
     };
 
+    const onMessageDeleted = (payload = {}) => {
+      const deletedMessageId = payload?.messageId ? String(payload.messageId) : "";
+      if (!deletedMessageId) {
+        return;
+      }
+
+      setMessages((previous) => {
+        let changed = false;
+        const next = previous
+          .filter((message) => {
+            const shouldKeep = String(message._id) !== deletedMessageId;
+            if (!shouldKeep) {
+              changed = true;
+            }
+            return shouldKeep;
+          })
+          .map((message) => {
+            const replyId = toId(message.replyTo);
+            if (replyId && String(replyId) === deletedMessageId) {
+              changed = true;
+              return { ...message, replyTo: null };
+            }
+
+            return message;
+          });
+
+        return changed ? next : previous;
+      });
+
+      setReplyToMessage((previous) =>
+        previous && String(previous._id) === deletedMessageId ? null : previous,
+      );
+    };
+
+    const onConversationCleared = (payload = {}) => {
+      const conversationTargetId = payload?.receiverUserIdOrRoomId
+        ? String(payload.receiverUserIdOrRoomId)
+        : "";
+      if (!conversationTargetId) {
+        return;
+      }
+
+      const dmNotificationKey = buildDmNotificationKey(conversationTargetId);
+      const roomNotificationKey = buildRoomNotificationKey(conversationTargetId);
+
+      clearUnreadForKey(dmNotificationKey);
+      clearUnreadForKey(roomNotificationKey);
+
+      const isActiveConversation =
+        activeNotificationKeyRef.current === dmNotificationKey ||
+        activeNotificationKeyRef.current === roomNotificationKey;
+
+      if (isActiveConversation) {
+        setMessages([]);
+        setReplyToMessage(null);
+      }
+    };
+
     const onNewMessage = (payload = {}) => {
       const incomingMessage = payload?.data || payload?.message || payload;
       const messageId = incomingMessage?._id ? String(incomingMessage._id) : "";
@@ -1246,6 +1305,8 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
 
     socket.on("message:reaction_updated", onReactionUpdated);
     socket.on("message:new", onNewMessage);
+    socket.on("message:deleted", onMessageDeleted);
+    socket.on("conversation:cleared", onConversationCleared);
     socket.on("room:membership_changed", onRoomMembershipChanged);
     socket.on("room:removed", onRoomRemoved);
     socket.on("call:offer", onCallOffer);
@@ -1256,6 +1317,8 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     return () => {
       socket.off("message:reaction_updated", onReactionUpdated);
       socket.off("message:new", onNewMessage);
+      socket.off("message:deleted", onMessageDeleted);
+      socket.off("conversation:cleared", onConversationCleared);
       socket.off("room:membership_changed", onRoomMembershipChanged);
       socket.off("room:removed", onRoomRemoved);
       socket.off("call:offer", onCallOffer);
@@ -1270,6 +1333,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     };
   }, [
     appendRealtimeMessage,
+    clearUnreadForKey,
     currentUserId,
     endActiveCall,
     flushQueuedIceCandidates,
@@ -1651,6 +1715,83 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     messageInputRef.current?.focus();
   }, []);
 
+  const handleDeleteMessage = useCallback(
+    async (message) => {
+      const messageId = message?._id ? String(message._id) : "";
+      if (!messageId || !currentUserId) {
+        return;
+      }
+
+      const shouldDelete = window.confirm("Delete this message?");
+      if (!shouldDelete) {
+        return;
+      }
+
+      try {
+        await axios.delete(`${API_BASE_URL}/api/messages/${messageId}`, {
+          data: { actorUserId: currentUserId },
+        });
+
+        setMessages((previous) =>
+          previous
+            .filter((existingMessage) => String(existingMessage._id) !== messageId)
+            .map((existingMessage) => {
+              if (toId(existingMessage.replyTo) === messageId) {
+                return { ...existingMessage, replyTo: null };
+              }
+              return existingMessage;
+            }),
+        );
+        setReplyToMessage((previous) =>
+          previous && String(previous._id) === messageId ? null : previous,
+        );
+      } catch (error) {
+        alert(error.response?.data?.message || "Failed to delete message");
+      }
+    },
+    [currentUserId],
+  );
+
+  const handleClearActiveConversation = useCallback(async () => {
+    const conversationTargetId = selectedRoom?._id || selectedUser?._id;
+    if (!conversationTargetId || !currentUserId || isClearingConversation) {
+      return;
+    }
+
+    const confirmText = selectedRoom
+      ? "Delete all messages in this room chat? This will affect all room members."
+      : "Delete all messages in this direct chat?";
+    const shouldClear = window.confirm(confirmText);
+    if (!shouldClear) {
+      return;
+    }
+
+    try {
+      setIsClearingConversation(true);
+      await axios.delete(`${API_BASE_URL}/api/messages/conversation/clear`, {
+        data: {
+          actorUserId: currentUserId,
+          receiverUserIdOrRoomId: conversationTargetId,
+        },
+      });
+
+      setMessages([]);
+      setReplyToMessage(null);
+      clearUnreadForKey(buildRoomNotificationKey(String(conversationTargetId)));
+      clearUnreadForKey(buildDmNotificationKey(String(conversationTargetId)));
+    } catch (error) {
+      alert(error.response?.data?.message || "Failed to clear conversation");
+    } finally {
+      setIsClearingConversation(false);
+    }
+  }, [
+    clearUnreadForKey,
+    currentUserId,
+    isClearingConversation,
+    selectedRoom,
+    selectedUser,
+  ]);
+
   const handleCreateRoom = useCallback(async () => {
     if (!newRoomName.trim()) {
       return;
@@ -1896,6 +2037,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   const callStatusLabel = CALL_STATUS_LABELS[callState.status] || "";
   const callHasLocalVideoTrack = Boolean(localStream?.getVideoTracks?.().length);
   const callButtonDisabled = !selectedUser?._id || !isCallIdle;
+  const canClearActiveConversation = selectedRoom ? canManageSelectedRoomMembers : Boolean(selectedUser);
   const selectedUserFollowState = selectedUser?._id
     ? userFollowStatus[selectedUser._id] || "not_following"
     : "not_following";
@@ -2201,6 +2343,24 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
               </div>
             </div>
             <div className="chat-actions">
+              {(selectedRoom || selectedUser) && (
+                <button
+                  className="icon-btn danger"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleClearActiveConversation();
+                  }}
+                  title={
+                    selectedRoom && !canClearActiveConversation
+                      ? "Only room creator can clear this chat"
+                      : "Delete all messages in this chat"
+                  }
+                  aria-label="Delete all messages in this chat"
+                  disabled={isClearingConversation || !canClearActiveConversation}
+                >
+                  {isClearingConversation ? "..." : "Clear"}
+                </button>
+              )}
               {selectedUser && (
                 <>
                   <button
@@ -2254,6 +2414,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
                 onReact={handleReactToMessage}
                 onOpenSenderProfile={openSenderProfile}
                 onReply={handleReplyToMessage}
+                onDelete={handleDeleteMessage}
               />
             ))}
             <div ref={messagesEndRef} />

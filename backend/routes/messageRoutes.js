@@ -129,6 +129,68 @@ async function ensureReplyMessageInConversation(replyToMessageId, context, sende
   return { replyToMessageId: replyMessage._id };
 }
 
+async function resolveConversationContext(actorUserId, receiverUserIdOrRoomId) {
+  if (!isValidObjectId(actorUserId) || !isValidObjectId(receiverUserIdOrRoomId)) {
+    return { error: { status: 400, message: "Invalid actor or conversation identifier" } };
+  }
+
+  const [actorUser, room] = await Promise.all([
+    User.findById(actorUserId).select("_id"),
+    ChatRoom.findById(receiverUserIdOrRoomId).select("_id createdBy members"),
+  ]);
+
+  if (!actorUser) {
+    return { error: { status: 404, message: "Actor user not found" } };
+  }
+
+  if (room) {
+    const actorIsMember = isRoomMember(room, actorUserId);
+    if (!actorIsMember) {
+      return { error: { status: 403, message: "Only room members can manage room messages" } };
+    }
+
+    return {
+      context: {
+        type: "room",
+        actorUserId: String(actorUser._id),
+        roomId: String(room._id),
+        roomCreatedBy: toStringId(room.createdBy),
+        roomMemberIds: (room.members || []).map((member) => toStringId(member)).filter(Boolean),
+      },
+    };
+  }
+
+  const peerUser = await User.findById(receiverUserIdOrRoomId).select("_id");
+  if (!peerUser) {
+    return { error: { status: 404, message: "Conversation target not found" } };
+  }
+
+  return {
+    context: {
+      type: "dm",
+      actorUserId: String(actorUser._id),
+      peerUserId: String(peerUser._id),
+    },
+  };
+}
+
+function canActorDeleteMessage({ message, actorUserId, conversationContext }) {
+  const actorId = String(actorUserId || "");
+  const senderId = toStringId(message?.senderUserId);
+  const receiverId = toStringId(message?.receiverUserIdOrRoomId);
+
+  if (!actorId || !senderId || !conversationContext) {
+    return false;
+  }
+
+  if (conversationContext.type === "room") {
+    const roomCreatorId = String(conversationContext.roomCreatedBy || "");
+    return senderId === actorId || roomCreatorId === actorId;
+  }
+
+  return senderId === actorId || receiverId === actorId;
+}
+
 function normalizeReactions(reactions) {
   return reactions.map((reaction) => ({
     user: reaction.user?._id?.toString?.() || reaction.user?.toString?.() || "",
@@ -154,6 +216,50 @@ function getMessageRooms(message) {
       rooms.add(`dm:${[senderId, targetId].sort().join(":")}`);
     }
   }
+
+  return Array.from(rooms);
+}
+
+function getConversationRooms({
+  type,
+  actorUserId,
+  peerUserId,
+  roomId,
+  roomMemberIds = [],
+}) {
+  const rooms = new Set();
+
+  if (type === "dm") {
+    const actorId = String(actorUserId || "");
+    const targetId = String(peerUserId || "");
+
+    if (actorId) {
+      rooms.add(`user:${actorId}`);
+    }
+
+    if (targetId) {
+      rooms.add(`user:${targetId}`);
+    }
+
+    if (actorId && targetId) {
+      rooms.add(`dm:${[actorId, targetId].sort().join(":")}`);
+    }
+
+    return Array.from(rooms);
+  }
+
+  const normalizedRoomId = String(roomId || "");
+  if (normalizedRoomId) {
+    rooms.add(`room:${normalizedRoomId}`);
+    rooms.add(`conversation:${normalizedRoomId}`);
+  }
+
+  (roomMemberIds || []).forEach((memberId) => {
+    const normalizedMemberId = String(memberId || "");
+    if (normalizedMemberId) {
+      rooms.add(`user:${normalizedMemberId}`);
+    }
+  });
 
   return Array.from(rooms);
 }
@@ -193,6 +299,27 @@ function emitNewMessage(io, message) {
   emitToRooms(io, getMessageRooms(message), "message:new", {
     data: message,
   });
+}
+
+function emitMessageDeleted(io, message, actorUserId) {
+  if (!io || !message?._id) {
+    return;
+  }
+
+  emitToRooms(io, getMessageRooms(message), "message:deleted", {
+    messageId: message._id.toString(),
+    receiverUserIdOrRoomId: toStringId(message.receiverUserIdOrRoomId),
+    actorUserId: String(actorUserId || ""),
+  });
+}
+
+function emitConversationCleared(io, context, payload) {
+  if (!io || !context) {
+    return;
+  }
+
+  const rooms = getConversationRooms(context);
+  emitToRooms(io, rooms, "conversation:cleared", payload);
 }
 
 // Send a message
@@ -252,6 +379,108 @@ router.post("/send", async (req, res) => {
     res.json({ message: "Message sent successfully", data: newMessage });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// Clear all messages in a conversation (direct chat or room)
+router.delete("/conversation/clear", async (req, res) => {
+  try {
+    const actorUserId = req.body?.actorUserId || req.query.actorUserId;
+    const receiverUserIdOrRoomId =
+      req.body?.receiverUserIdOrRoomId || req.query.receiverUserIdOrRoomId;
+
+    if (!actorUserId || !receiverUserIdOrRoomId) {
+      return res.status(400).json({ message: "actorUserId and receiverUserIdOrRoomId are required" });
+    }
+
+    const contextResult = await resolveConversationContext(actorUserId, receiverUserIdOrRoomId);
+    if (contextResult.error) {
+      return res.status(contextResult.error.status).json({ message: contextResult.error.message });
+    }
+
+    const { context } = contextResult;
+    let deleteQuery;
+
+    if (context.type === "room") {
+      const roomCreatorId = String(context.roomCreatedBy || "");
+      if (roomCreatorId !== String(actorUserId)) {
+        return res.status(403).json({ message: "Only room creator can clear room chat" });
+      }
+
+      deleteQuery = { receiverUserIdOrRoomId };
+    } else {
+      deleteQuery = {
+        $or: [
+          { senderUserId: actorUserId, receiverUserIdOrRoomId },
+          { senderUserId: receiverUserIdOrRoomId, receiverUserIdOrRoomId: actorUserId },
+        ],
+      };
+    }
+
+    const deleteResult = await Message.deleteMany(deleteQuery);
+
+    const io = req.app.get("io");
+    emitConversationCleared(io, context, {
+      receiverUserIdOrRoomId: String(receiverUserIdOrRoomId),
+      actorUserId: String(actorUserId),
+      deletedCount: deleteResult.deletedCount || 0,
+      conversationType: context.type,
+    });
+
+    return res.json({
+      message: "Conversation cleared successfully",
+      deletedCount: deleteResult.deletedCount || 0,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+// Delete a particular message
+router.delete("/:messageId", async (req, res) => {
+  try {
+    const actorUserId = req.body?.actorUserId || req.query.actorUserId;
+    const { messageId } = req.params;
+
+    if (!actorUserId) {
+      return res.status(400).json({ message: "actorUserId is required" });
+    }
+
+    if (!isValidObjectId(messageId)) {
+      return res.status(400).json({ message: "Invalid messageId" });
+    }
+
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    const contextResult = await resolveConversationContext(
+      actorUserId,
+      message.receiverUserIdOrRoomId,
+    );
+    if (contextResult.error) {
+      return res.status(contextResult.error.status).json({ message: contextResult.error.message });
+    }
+
+    const isAllowed = canActorDeleteMessage({
+      message,
+      actorUserId,
+      conversationContext: contextResult.context,
+    });
+
+    if (!isAllowed) {
+      return res.status(403).json({ message: "You can only delete your own message in this chat" });
+    }
+
+    await Message.deleteOne({ _id: messageId });
+
+    const io = req.app.get("io");
+    emitMessageDeleted(io, message, actorUserId);
+
+    return res.json({ message: "Message deleted successfully", messageId });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
   }
 });
 

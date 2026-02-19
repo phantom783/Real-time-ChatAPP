@@ -1240,10 +1240,8 @@ body {
 
 /* Reactions */
 .wa-reaction-bar {
-  position: absolute;
-  top: -42px;
-  left: 50%;
-  transform: translateX(-50%);
+  position: static;
+  transform: none;
   display: flex;
   gap: 0.28rem;
   padding: 0.3rem 0.35rem;
@@ -1257,25 +1255,37 @@ body {
 .wa-message-actions {
   position: absolute;
   top: -44px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
   display: inline-flex;
   align-items: center;
   gap: 0.38rem;
+  width: max-content;
+  max-width: calc(100vw - 150px);
+  overflow-x: auto;
+  scrollbar-width: none;
   opacity: 0;
   pointer-events: none;
   transition: opacity var(--transition-fast);
   z-index: 31;
 }
 
+.wa-message-actions::-webkit-scrollbar {
+  display: none;
+}
+
+.wa-message-actions.mine {
+  left: auto;
+  right: 0;
+}
+
+.wa-message-actions.theirs {
+  left: 0;
+  right: auto;
+}
+
 .wa-message-actions.visible {
   opacity: 1;
   pointer-events: auto;
-}
-
-.wa-message-actions .wa-reaction-bar {
-  position: static;
-  transform: none;
 }
 
 .wa-reply-action {
@@ -1292,6 +1302,23 @@ body {
 
 .wa-reply-action:hover {
   background: color-mix(in srgb, rgba(15, 20, 28, 0.94) 74%, var(--primary-color) 26%);
+}
+
+.wa-delete-action {
+  border: 1px solid rgba(248, 113, 113, 0.46);
+  background: rgba(34, 10, 14, 0.94);
+  color: #fecaca;
+  border-radius: 999px;
+  height: 30px;
+  padding: 0 0.66rem;
+  font-size: 0.73rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wa-delete-action:hover {
+  background: rgba(127, 29, 29, 0.94);
+  color: #ffffff;
 }
 
 .wa-reaction-option {
@@ -1357,6 +1384,34 @@ body {
 }
 
 @media (max-width: 768px) {
+  .wa-message-actions {
+    max-width: calc(100vw - 42px);
+    top: -40px;
+    gap: 0.28rem;
+  }
+
+  .wa-reaction-bar {
+    gap: 0.22rem;
+    padding: 0.25rem 0.28rem;
+  }
+
+  .wa-reaction-option,
+  .wa-reply-action,
+  .wa-delete-action {
+    height: 28px;
+  }
+
+  .wa-reaction-option {
+    width: 28px;
+    font-size: 0.95rem;
+  }
+
+  .wa-reply-action,
+  .wa-delete-action {
+    padding: 0 0.58rem;
+    font-size: 0.7rem;
+  }
+
   .wa-emoji-sheet {
     position: fixed;
     left: 0;
