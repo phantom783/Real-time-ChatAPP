@@ -31,13 +31,29 @@ function buildReactionSummary(reactions, currentUserId) {
   return Array.from(aggregate.values());
 }
 
-function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile }) {
+function getMessageTextPreview(content, maxLength = 120) {
+  const text = String(content || "").trim();
+  if (!text) {
+    return "Message unavailable";
+  }
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile, onReply }) {
   const [showReactionBar, setShowReactionBar] = useState(false);
   const longPressTimerRef = useRef(null);
 
   const senderId = getUserId(message.senderUserId);
   const isMine = senderId === currentUserId || senderId === "";
   const senderName = message.senderUserId?.username || "Unknown";
+  const replyMessage = message.replyTo && typeof message.replyTo === "object" ? message.replyTo : null;
+  const replySenderId = getUserId(replyMessage?.senderUserId);
+  const replySenderName = replySenderId === currentUserId ? "You" : replyMessage?.senderUserId?.username || "Unknown";
 
   const myReaction = useMemo(() => {
     return (message.reactions || []).find((reaction) => getUserId(reaction.user) === currentUserId)?.emoji || null;
@@ -117,13 +133,35 @@ function MessageItem({ message, currentUserId, onReact, onOpenSenderProfile }) {
 
       <div className="msg-bubble">
         <div className="glass-reflex" aria-hidden="true" />
+        {replyMessage && (
+          <div className="msg-reply-quote" aria-label={`Reply to ${replySenderName}`}>
+            <span className="msg-reply-sender">{replySenderName}</span>
+            <span className="msg-reply-text">{getMessageTextPreview(replyMessage.messageContent, 90)}</span>
+          </div>
+        )}
         {message.messageContent}
         <span className="msg-time">
           {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
         </span>
       </div>
 
-      <ReactionBar visible={showReactionBar} activeEmoji={myReaction} onSelect={onReactionSelect} />
+      <div className={`wa-message-actions ${showReactionBar ? "visible" : ""}`}>
+        <ReactionBar visible={showReactionBar} activeEmoji={myReaction} onSelect={onReactionSelect} />
+        {showReactionBar && (
+          <button
+            type="button"
+            className="wa-reply-action"
+            onMouseDown={(event) => {
+              event.preventDefault();
+            }}
+            onClick={() => onReply?.(message)}
+            aria-label="Reply to message"
+            title="Reply"
+          >
+            Reply
+          </button>
+        )}
+      </div>
 
       {reactionSummary.length > 0 && (
         <div className="wa-reaction-summary" role="group" aria-label="Message reactions">
@@ -151,7 +189,8 @@ const MemoMessageItem = memo(
     prevProps.message === nextProps.message &&
     prevProps.currentUserId === nextProps.currentUserId &&
     prevProps.onReact === nextProps.onReact &&
-    prevProps.onOpenSenderProfile === nextProps.onOpenSenderProfile,
+    prevProps.onOpenSenderProfile === nextProps.onOpenSenderProfile &&
+    prevProps.onReply === nextProps.onReply,
 );
 
 export default MemoMessageItem;

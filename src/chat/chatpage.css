@@ -732,6 +732,37 @@ body {
   text-align: left;
 }
 
+.msg-reply-quote {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+  margin-bottom: 0.52rem;
+  padding: 0.42rem 0.52rem;
+  border-radius: 0.7rem;
+  border-left: 3px solid rgba(255, 255, 255, 0.75);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.message.received .msg-reply-quote {
+  border-left-color: color-mix(in srgb, var(--primary-color) 72%, #ffffff 28%);
+  background: color-mix(in srgb, var(--glass-bg) 75%, rgba(15, 23, 42, 0.35));
+}
+
+.msg-reply-sender {
+  font-size: 0.72rem;
+  font-weight: 700;
+  opacity: 0.9;
+}
+
+.msg-reply-text {
+  font-size: 0.74rem;
+  line-height: 1.35;
+  opacity: 0.84;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .msg-time {
   font-size: 0.7rem;
   opacity: 0.5;
@@ -747,6 +778,58 @@ body {
   position: sticky;
   bottom: 0;
   z-index: 2;
+}
+
+.reply-composer-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.56rem 0.78rem;
+  margin-bottom: 0.55rem;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--primary-color) 44%, transparent);
+  background: color-mix(in srgb, var(--glass-bg) 74%, rgba(15, 23, 42, 0.3));
+}
+
+.reply-composer-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+}
+
+.reply-composer-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.reply-composer-text {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-composer-cancel {
+  border: none;
+  border-radius: 999px;
+  height: 30px;
+  padding: 0 0.74rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--glass-bg) 82%, transparent);
+  border: 1px solid var(--input-border);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.reply-composer-cancel:hover {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--primary-color) 56%, #ffffff 44%);
 }
 
 .input-wrapper {
@@ -799,6 +882,11 @@ body {
   outline: none;
 }
 
+.chat-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .send-btn {
   background: var(--primary-gradient);
   color: white;
@@ -824,6 +912,12 @@ body {
   opacity: 0.55;
   cursor: not-allowed;
   transform: none;
+}
+
+.chat-input-note {
+  margin: 0.48rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
 }
 
 /* Calling */
@@ -1158,6 +1252,46 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.28);
   z-index: 30;
+}
+
+.wa-message-actions {
+  position: absolute;
+  top: -44px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+  z-index: 31;
+}
+
+.wa-message-actions.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.wa-message-actions .wa-reaction-bar {
+  position: static;
+  transform: none;
+}
+
+.wa-reply-action {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(15, 20, 28, 0.94);
+  color: #f8fafc;
+  border-radius: 999px;
+  height: 30px;
+  padding: 0 0.66rem;
+  font-size: 0.73rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wa-reply-action:hover {
+  background: color-mix(in srgb, rgba(15, 20, 28, 0.94) 74%, var(--primary-color) 26%);
 }
 
 .wa-reaction-option {

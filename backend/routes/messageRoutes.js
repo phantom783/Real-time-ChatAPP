@@ -1,6 +1,133 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const router = express.Router();
 const Message = require("../models/Message");
+const ChatRoom = require("../models/ChatRoom");
+const User = require("../models/User");
+
+function isValidObjectId(value) {
+  return mongoose.Types.ObjectId.isValid(String(value || ""));
+}
+
+function toStringId(value) {
+  if (!value) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "object" && value._id) {
+    return String(value._id);
+  }
+
+  if (typeof value.toString === "function") {
+    const serialized = value.toString();
+    return serialized === "[object Object]" ? "" : serialized;
+  }
+
+  return "";
+}
+
+function isRoomMember(room, userId) {
+  return (room.members || []).some((member) => toStringId(member) === String(userId));
+}
+
+async function populateMessageReferences(message) {
+  if (!message || typeof message.populate !== "function") {
+    return message;
+  }
+
+  await message.populate("senderUserId", "username email");
+  await message.populate("reactions.user", "username");
+  await message.populate({
+    path: "replyTo",
+    select: "messageContent senderUserId createdAt receiverUserIdOrRoomId",
+  });
+  await message.populate("replyTo.senderUserId", "username email");
+
+  return message;
+}
+
+async function ensureSendPermissions(senderUserId, receiverUserIdOrRoomId) {
+  if (!isValidObjectId(senderUserId) || !isValidObjectId(receiverUserIdOrRoomId)) {
+    return { error: { status: 400, message: "Invalid sender or receiver identifier" } };
+  }
+
+  const [sender, room] = await Promise.all([
+    User.findById(senderUserId).select("_id following"),
+    ChatRoom.findById(receiverUserIdOrRoomId).select("_id members"),
+  ]);
+
+  if (!sender) {
+    return { error: { status: 404, message: "Sender user not found" } };
+  }
+
+  if (room) {
+    if (!isRoomMember(room, senderUserId)) {
+      return { error: { status: 403, message: "Only room members can send messages to this room" } };
+    }
+
+    return { context: { type: "room", roomId: room._id.toString() } };
+  }
+
+  const receiverUser = await User.findById(receiverUserIdOrRoomId).select("_id");
+  if (!receiverUser) {
+    return { error: { status: 404, message: "Recipient user not found" } };
+  }
+
+  const isFollowingReceiver = (sender.following || []).some(
+    (followingUserId) => String(followingUserId) === String(receiverUserIdOrRoomId),
+  );
+
+  if (!isFollowingReceiver) {
+    return { error: { status: 403, message: "Follow this user first to send direct messages" } };
+  }
+
+  return { context: { type: "dm", receiverUserId: receiverUser._id.toString() } };
+}
+
+async function ensureReplyMessageInConversation(replyToMessageId, context, senderUserId, receiverUserIdOrRoomId) {
+  if (!replyToMessageId) {
+    return { replyToMessageId: null };
+  }
+
+  if (!isValidObjectId(replyToMessageId)) {
+    return { error: { status: 400, message: "Invalid replyToMessageId" } };
+  }
+
+  const replyMessage = await Message.findById(replyToMessageId).select(
+    "_id senderUserId receiverUserIdOrRoomId",
+  );
+
+  if (!replyMessage) {
+    return { error: { status: 404, message: "Reply target message not found" } };
+  }
+
+  if (context.type === "room") {
+    const isSameRoom = String(replyMessage.receiverUserIdOrRoomId) === String(receiverUserIdOrRoomId);
+    if (!isSameRoom) {
+      return { error: { status: 400, message: "Reply message must belong to the same room" } };
+    }
+
+    return { replyToMessageId: replyMessage._id };
+  }
+
+  const senderId = String(senderUserId);
+  const receiverId = String(receiverUserIdOrRoomId);
+  const replySenderId = toStringId(replyMessage.senderUserId);
+  const replyReceiverId = toStringId(replyMessage.receiverUserIdOrRoomId);
+  const isSameDirectConversation =
+    (replySenderId === senderId && replyReceiverId === receiverId) ||
+    (replySenderId === receiverId && replyReceiverId === senderId);
+
+  if (!isSameDirectConversation) {
+    return { error: { status: 400, message: "Reply message must belong to the same conversation" } };
+  }
+
+  return { replyToMessageId: replyMessage._id };
+}
 
 function normalizeReactions(reactions) {
   return reactions.map((reaction) => ({
@@ -10,8 +137,8 @@ function normalizeReactions(reactions) {
 }
 
 function getMessageRooms(message) {
-  const senderId = message.senderUserId?._id?.toString?.() || message.senderUserId?.toString?.();
-  const targetId = message.receiverUserIdOrRoomId?.toString?.();
+  const senderId = toStringId(message.senderUserId);
+  const targetId = toStringId(message.receiverUserIdOrRoomId);
   const rooms = new Set();
 
   if (senderId) {
@@ -78,10 +205,30 @@ router.post("/send", async (req, res) => {
       messageType,
       isEncrypted,
       encryptionMethod,
+      replyToMessageId,
+      replyTo,
     } = req.body;
 
     if (!senderUserId || !receiverUserIdOrRoomId || !messageContent) {
       return res.status(400).json({ message: "All fields required" });
+    }
+
+    const permissionResult = await ensureSendPermissions(senderUserId, receiverUserIdOrRoomId);
+    if (permissionResult.error) {
+      return res.status(permissionResult.error.status).json({ message: permissionResult.error.message });
+    }
+
+    const requestedReplyMessageId = replyToMessageId || replyTo;
+    const replyValidationResult = await ensureReplyMessageInConversation(
+      requestedReplyMessageId,
+      permissionResult.context,
+      senderUserId,
+      receiverUserIdOrRoomId,
+    );
+    if (replyValidationResult.error) {
+      return res
+        .status(replyValidationResult.error.status)
+        .json({ message: replyValidationResult.error.message });
     }
 
     const newMessage = new Message({
@@ -92,11 +239,12 @@ router.post("/send", async (req, res) => {
       readStatus: false,
       isEncrypted: isEncrypted !== undefined ? isEncrypted : true,
       encryptionMethod: encryptionMethod || "AES",
+      replyTo: replyValidationResult.replyToMessageId,
       reactions: [],
     });
 
     await newMessage.save();
-    await newMessage.populate("senderUserId", "username email");
+    await populateMessageReferences(newMessage);
 
     const io = req.app.get("io");
     emitNewMessage(io, newMessage);
@@ -118,6 +266,11 @@ router.get("/between/:userId1/:userId2", async (req, res) => {
     })
       .populate("senderUserId", "username email")
       .populate("reactions.user", "username")
+      .populate({
+        path: "replyTo",
+        select: "messageContent senderUserId createdAt receiverUserIdOrRoomId",
+      })
+      .populate("replyTo.senderUserId", "username email")
       .sort({ createdAt: 1 });
 
     res.json(messages);
@@ -132,6 +285,11 @@ router.get("/:receiverId", async (req, res) => {
     const messages = await Message.find({ receiverUserIdOrRoomId: req.params.receiverId })
       .populate("senderUserId", "username email")
       .populate("reactions.user", "username")
+      .populate({
+        path: "replyTo",
+        select: "messageContent senderUserId createdAt receiverUserIdOrRoomId",
+      })
+      .populate("replyTo.senderUserId", "username email")
       .sort({ createdAt: 1 });
 
     res.json(messages);
@@ -173,8 +331,7 @@ router.put("/:messageId/reactions", async (req, res) => {
     }
 
     await message.save();
-    await message.populate("senderUserId", "username email");
-    await message.populate("reactions.user", "username");
+    await populateMessageReferences(message);
 
     const io = req.app.get("io");
     emitReactionUpdate(io, message, action);
@@ -207,8 +364,7 @@ router.delete("/:messageId/reactions", async (req, res) => {
     }
 
     await message.save();
-    await message.populate("senderUserId", "username email");
-    await message.populate("reactions.user", "username");
+    await populateMessageReferences(message);
 
     const io = req.app.get("io");
     emitReactionUpdate(io, message, "removed");

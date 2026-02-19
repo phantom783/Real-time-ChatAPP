@@ -53,7 +53,18 @@ function toId(value) {
     return value;
   }
 
-  return value._id || "";
+  if (typeof value === "object" && value._id) {
+    return String(value._id);
+  }
+
+  if (typeof value?.toString === "function") {
+    const serialized = value.toString();
+    if (serialized && serialized !== "[object Object]") {
+      return serialized;
+    }
+  }
+
+  return "";
 }
 
 function buildDmChannel(userId1, userId2) {
@@ -154,6 +165,27 @@ function normalizeReaction(reaction) {
   };
 }
 
+function normalizeReplyPreview(replyToMessage) {
+  if (!replyToMessage || typeof replyToMessage !== "object") {
+    return null;
+  }
+
+  return {
+    _id: toId(replyToMessage),
+    senderUserId: replyToMessage.senderUserId || null,
+    messageContent: String(replyToMessage.messageContent || ""),
+    createdAt: replyToMessage.createdAt || "",
+  };
+}
+
+function isRoomMember(room, userId) {
+  if (!room || !Array.isArray(room.members) || !userId) {
+    return false;
+  }
+
+  return room.members.some((member) => String(toId(member)) === String(userId));
+}
+
 function areReactionsEqual(previous = [], next = []) {
   if (previous.length !== next.length) {
     return false;
@@ -175,6 +207,17 @@ function shouldReuseMessage(previousMessage, nextMessage) {
     return false;
   }
 
+  const previousReply = normalizeReplyPreview(previousMessage.replyTo);
+  const nextReply = normalizeReplyPreview(nextMessage.replyTo);
+  const isReplyEqual =
+    (!previousReply && !nextReply) ||
+    (Boolean(previousReply) &&
+      Boolean(nextReply) &&
+      previousReply._id === nextReply._id &&
+      previousReply.messageContent === nextReply.messageContent &&
+      toId(previousReply.senderUserId) === toId(nextReply.senderUserId) &&
+      String(previousReply.createdAt) === String(nextReply.createdAt));
+
   return (
     String(previousMessage._id) === String(nextMessage._id) &&
     previousMessage.messageContent === nextMessage.messageContent &&
@@ -183,7 +226,8 @@ function shouldReuseMessage(previousMessage, nextMessage) {
     String(previousMessage.createdAt) === String(nextMessage.createdAt) &&
     String(previousMessage.updatedAt) === String(nextMessage.updatedAt) &&
     toId(previousMessage.senderUserId) === toId(nextMessage.senderUserId) &&
-    areReactionsEqual(previousMessage.reactions || [], nextMessage.reactions || [])
+    areReactionsEqual(previousMessage.reactions || [], nextMessage.reactions || []) &&
+    isReplyEqual
   );
 }
 
@@ -194,6 +238,7 @@ function reconcileMessages(previousMessages, incomingMessages) {
     const normalizedMessage = {
       ...message,
       reactions: Array.isArray(message.reactions) ? message.reactions : [],
+      replyTo: normalizeReplyPreview(message.replyTo),
     };
 
     const existing = previousById.get(String(normalizedMessage._id));
@@ -327,6 +372,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   const [selectedUser, setSelectedUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState("");
+  const [replyToMessage, setReplyToMessage] = useState(null);
   const [newRoomName, setNewRoomName] = useState("");
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [activeTab, setActiveTab] = useState("chats");
@@ -575,6 +621,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       const normalizedMessage = {
         ...message,
         reactions: Array.isArray(message.reactions) ? message.reactions : [],
+        replyTo: normalizeReplyPreview(message.replyTo),
       };
 
       return [...previous, normalizedMessage];
@@ -1031,6 +1078,63 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       showBrowserNotification(senderName, previewText);
     };
 
+    const removeRoomFromUi = (roomId) => {
+      if (!roomId) {
+        return;
+      }
+
+      const normalizedRoomId = String(roomId);
+      const roomNotificationKey = buildRoomNotificationKey(normalizedRoomId);
+
+      setRooms((previous) =>
+        previous.filter((room) => String(room._id) !== normalizedRoomId),
+      );
+      setSelectedRoom((previous) =>
+        previous && String(previous._id) === normalizedRoomId ? null : previous,
+      );
+      setUnreadCounts((previous) => {
+        if (!previous[roomNotificationKey]) {
+          return previous;
+        }
+
+        const next = { ...previous };
+        delete next[roomNotificationKey];
+        return next;
+      });
+    };
+
+    const onRoomMembershipChanged = (payload = {}) => {
+      const updatedRoom = payload?.room;
+      if (!updatedRoom?._id) {
+        return;
+      }
+
+      if (!isRoomMember(updatedRoom, currentUserId)) {
+        removeRoomFromUi(updatedRoom._id);
+        return;
+      }
+
+      setRooms((previous) => {
+        const exists = previous.some((room) => String(room._id) === String(updatedRoom._id));
+        if (!exists) {
+          return [updatedRoom, ...previous];
+        }
+
+        return previous.map((room) =>
+          String(room._id) === String(updatedRoom._id) ? updatedRoom : room,
+        );
+      });
+
+      setSelectedRoom((previous) =>
+        previous && String(previous._id) === String(updatedRoom._id) ? updatedRoom : previous,
+      );
+    };
+
+    const onRoomRemoved = (payload = {}) => {
+      const roomId = payload?.roomId || payload?.room?._id;
+      removeRoomFromUi(roomId);
+    };
+
     const onCallOffer = (payload = {}) => {
       const fromUserId = payload?.fromUserId ? String(payload.fromUserId) : "";
       if (!fromUserId || !payload?.offer) {
@@ -1142,6 +1246,8 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
 
     socket.on("message:reaction_updated", onReactionUpdated);
     socket.on("message:new", onNewMessage);
+    socket.on("room:membership_changed", onRoomMembershipChanged);
+    socket.on("room:removed", onRoomRemoved);
     socket.on("call:offer", onCallOffer);
     socket.on("call:answer", onCallAnswer);
     socket.on("call:ice-candidate", onCallIceCandidate);
@@ -1150,6 +1256,8 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     return () => {
       socket.off("message:reaction_updated", onReactionUpdated);
       socket.off("message:new", onNewMessage);
+      socket.off("room:membership_changed", onRoomMembershipChanged);
+      socket.off("room:removed", onRoomRemoved);
       socket.off("call:offer", onCallOffer);
       socket.off("call:answer", onCallAnswer);
       socket.off("call:ice-candidate", onCallIceCandidate);
@@ -1247,6 +1355,10 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   }, [fetchMessages, selectedRoom, selectedUser]);
 
   useEffect(() => {
+    setReplyToMessage(null);
+  }, [selectedRoom?._id, selectedUser?._id]);
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [messages.length]);
 
@@ -1269,11 +1381,14 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       try {
         setIsLoading(true);
         const [roomsResponse, usersResponse] = await Promise.all([
-          axios.get(`${API_BASE_URL}/api/chatrooms`),
+          axios.get(`${API_BASE_URL}/api/chatrooms`, {
+            params: { memberId: currentUserId },
+          }),
           axios.get(`${API_BASE_URL}/api/users`),
         ]);
 
-        setRooms(roomsResponse.data || []);
+        const nextRooms = Array.isArray(roomsResponse.data) ? roomsResponse.data : [];
+        setRooms(nextRooms.filter((room) => isRoomMember(room, currentUserId)));
 
         const normalizedUsers = (usersResponse.data || []).map(normalizeUserForUi);
         const selfUser = normalizedUsers.find((user) => String(user._id) === String(currentUserId));
@@ -1328,8 +1443,38 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     fetchFollowStatus();
   }, [fetchFollowStatus]);
 
+  useEffect(() => {
+    if (!currentUserId) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      fetchFollowStatus();
+    }, 10000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [currentUserId, fetchFollowStatus]);
+
+  const removeRoomById = useCallback((roomId) => {
+    if (!roomId) {
+      return;
+    }
+
+    setRooms((previous) => previous.filter((room) => String(room._id) !== String(roomId)));
+    setSelectedRoom((previous) =>
+      previous && String(previous._id) === String(roomId) ? null : previous,
+    );
+  }, []);
+
   const applyUpdatedRoom = useCallback((updatedRoom) => {
     if (!updatedRoom?._id) {
+      return;
+    }
+
+    if (!isRoomMember(updatedRoom, currentUserId)) {
+      removeRoomById(updatedRoom._id);
       return;
     }
 
@@ -1347,7 +1492,23 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     setSelectedRoom((previous) =>
       previous && String(previous._id) === String(updatedRoom._id) ? updatedRoom : previous,
     );
-  }, []);
+  }, [currentUserId, removeRoomById]);
+
+  useEffect(() => {
+    if (!selectedRoom?._id) {
+      return;
+    }
+
+    const roomStillExists = rooms.some((room) => String(room._id) === String(selectedRoom._id));
+    if (roomStillExists) {
+      return;
+    }
+
+    setSelectedRoom(null);
+    setShowRoomInfo(false);
+    setRoomMemberError("");
+    setRoomMemberAction({ type: "", userId: "" });
+  }, [rooms, selectedRoom?._id]);
 
   useEffect(() => {
     if (!showRoomInfo || !selectedRoom?._id) {
@@ -1409,7 +1570,11 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
 
   const handleSendMessage = useCallback(async () => {
     const trimmedMessage = newMessage.trim();
-    if (!trimmedMessage || (!selectedRoom && !selectedUser)) {
+    const isDirectMessageLocked =
+      Boolean(selectedUser?._id) &&
+      (userFollowStatus[selectedUser._id] || "not_following") !== "following";
+
+    if (!trimmedMessage || (!selectedRoom && !selectedUser) || isDirectMessageLocked) {
       return;
     }
 
@@ -1417,12 +1582,14 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       await axios.post(`${API_BASE_URL}/api/messages/send`, {
         senderUserId: currentUserId,
         receiverUserIdOrRoomId: selectedRoom?._id || selectedUser?._id,
-        messageContent: newMessage,
+        messageContent: trimmedMessage,
         messageType: "text",
+        replyToMessageId: replyToMessage?._id || null,
       });
 
       setNewMessage("");
       setShowEmojiPicker(false);
+      setReplyToMessage(null);
 
       if (messageInputRef.current) {
         messageInputRef.current.style.height = "auto";
@@ -1432,7 +1599,15 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     } catch (error) {
       console.error("Failed to send message:", error);
     }
-  }, [currentUserId, fetchMessages, newMessage, selectedRoom, selectedUser]);
+  }, [
+    currentUserId,
+    fetchMessages,
+    newMessage,
+    replyToMessage?._id,
+    selectedRoom,
+    selectedUser,
+    userFollowStatus,
+  ]);
 
   const handleReactToMessage = useCallback(
     async (messageId, emoji) => {
@@ -1462,6 +1637,20 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     [currentUserId],
   );
 
+  const handleReplyToMessage = useCallback((message) => {
+    if (!message?._id) {
+      return;
+    }
+
+    setReplyToMessage({
+      _id: String(message._id),
+      senderUserId: message.senderUserId || null,
+      messageContent: String(message.messageContent || ""),
+      createdAt: message.createdAt || "",
+    });
+    messageInputRef.current?.focus();
+  }, []);
+
   const handleCreateRoom = useCallback(async () => {
     if (!newRoomName.trim()) {
       return;
@@ -1477,8 +1666,11 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       setShowCreateRoom(false);
       setRoomError("");
 
-      const refreshedRooms = await axios.get(`${API_BASE_URL}/api/chatrooms`);
-      setRooms(refreshedRooms.data || []);
+      const refreshedRooms = await axios.get(`${API_BASE_URL}/api/chatrooms`, {
+        params: { memberId: currentUserId },
+      });
+      const nextRooms = Array.isArray(refreshedRooms.data) ? refreshedRooms.data : [];
+      setRooms(nextRooms.filter((room) => isRoomMember(room, currentUserId)));
     } catch (error) {
       setRoomError(error.response?.data?.message || "Failed to create room");
     }
@@ -1704,10 +1896,43 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   const callStatusLabel = CALL_STATUS_LABELS[callState.status] || "";
   const callHasLocalVideoTrack = Boolean(localStream?.getVideoTracks?.().length);
   const callButtonDisabled = !selectedUser?._id || !isCallIdle;
+  const selectedUserFollowState = selectedUser?._id
+    ? userFollowStatus[selectedUser._id] || "not_following"
+    : "not_following";
+  const canSendDirectMessage = !selectedUser || selectedUserFollowState === "following";
+  const messageInputDisabled = Boolean(selectedUser) && !canSendDirectMessage;
+  const messageInputPlaceholder = messageInputDisabled
+    ? selectedUserFollowState === "pending"
+      ? "Follow request pending..."
+      : "Follow this user to start messaging"
+    : "Type a message...";
+  const directMessageRestrictionText = messageInputDisabled
+    ? selectedUserFollowState === "pending"
+      ? `Your follow request to ${selectedUser?.displayName || "this user"} is pending approval.`
+      : `Follow ${selectedUser?.displayName || "this user"} to send direct messages.`
+    : "";
+  const replyTargetName = useMemo(() => {
+    const replySenderId = toId(replyToMessage?.senderUserId);
+    if (!replySenderId) {
+      return "Unknown";
+    }
+
+    if (String(replySenderId) === String(currentUserId)) {
+      return "You";
+    }
+
+    if (selectedUser && String(selectedUser._id) === String(replySenderId)) {
+      return selectedUser.displayName || "Unknown";
+    }
+
+    const matchedUser = users.find((user) => String(user._id) === String(replySenderId));
+    return matchedUser?.displayName || replyToMessage?.senderUserId?.username || "Unknown";
+  }, [currentUserId, replyToMessage, selectedUser, users]);
+  const replyTargetPreview = getNotificationPreview(replyToMessage?.messageContent || "Message unavailable");
 
   const renderSidebarContent = () => {
     if (activeTab === "requests") {
-      return <FriendRequests currentUserId={currentUserId} fetchFollowStatus={fetchFollowStatus} />;
+      return <FriendRequests currentUserId={currentUserId} onRequestStatusChange={fetchFollowStatus} />;
     }
 
     if (activeTab === "people") {
@@ -2028,12 +2253,30 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
                 currentUserId={currentUserId}
                 onReact={handleReactToMessage}
                 onOpenSenderProfile={openSenderProfile}
+                onReply={handleReplyToMessage}
               />
             ))}
             <div ref={messagesEndRef} />
           </div>
 
           <div className="chat-input-area">
+            {replyToMessage && (
+              <div className="reply-composer-banner" role="status" aria-live="polite">
+                <div className="reply-composer-copy">
+                  <span className="reply-composer-label">Replying to {replyTargetName}</span>
+                  <span className="reply-composer-text">{replyTargetPreview}</span>
+                </div>
+                <button
+                  type="button"
+                  className="reply-composer-cancel"
+                  onClick={() => setReplyToMessage(null)}
+                  aria-label="Cancel reply"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+
             <div className="input-wrapper">
               <div className="emoji-trigger" ref={emojiTriggerWrapRef}>
                 <button
@@ -2041,6 +2284,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
                   className="icon-btn emoji-open-btn"
                   type="button"
                   onClick={toggleEmojiPicker}
+                  disabled={messageInputDisabled}
                   aria-label="Open emoji picker"
                   aria-expanded={showEmojiPicker}
                 >
@@ -2058,9 +2302,10 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
               <textarea
                 ref={messageInputRef}
                 className="chat-input"
-                placeholder="Type a message..."
+                placeholder={messageInputPlaceholder}
                 value={newMessage}
                 rows={1}
+                disabled={messageInputDisabled}
                 onChange={(event) => setNewMessage(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -2070,10 +2315,15 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
                 }}
               />
 
-              <button className="send-btn" onClick={handleSendMessage} disabled={!newMessage.trim()}>
+              <button
+                className="send-btn"
+                onClick={handleSendMessage}
+                disabled={!newMessage.trim() || messageInputDisabled}
+              >
                 Send
               </button>
             </div>
+            {directMessageRestrictionText && <p className="chat-input-note">{directMessageRestrictionText}</p>}
           </div>
         </div>
       ) : (

@@ -30,6 +30,41 @@ function isRoomMember(room, userId) {
   return room.members.some((member) => toId(member) === String(userId));
 }
 
+function getRoomMemberIds(room) {
+  return (room?.members || []).map((member) => toId(member)).filter(Boolean);
+}
+
+function emitRoomMembershipChanged(io, room, action = "updated") {
+  if (!io || !room?._id) {
+    return;
+  }
+
+  const roomId = String(room._id);
+  const memberIds = getRoomMemberIds(room);
+
+  memberIds.forEach((memberId) => {
+    io.to(`user:${memberId}`).emit("room:membership_changed", {
+      action,
+      roomId,
+      room,
+    });
+  });
+}
+
+function emitRoomRemoved(io, roomId, userIds = [], action = "removed") {
+  if (!io || !roomId) {
+    return;
+  }
+
+  const uniqueUserIds = [...new Set(userIds.map((userId) => String(userId)).filter(Boolean))];
+  uniqueUserIds.forEach((userId) => {
+    io.to(`user:${userId}`).emit("room:removed", {
+      action,
+      roomId: String(roomId),
+    });
+  });
+}
+
 async function addMemberToRoom(roomId, userId, actorId) {
   if (!isValidObjectId(roomId)) {
     return { error: { status: 400, message: "Invalid roomId" } };
@@ -128,6 +163,7 @@ router.post("/create", async (req, res) => {
 
     await newRoom.save();
     const populatedRoom = await getPopulatedRoom(newRoom._id);
+    emitRoomMembershipChanged(req.app.get("io"), populatedRoom, "created");
 
     res.json({ message: "Room created successfully", room: populatedRoom });
   } catch (err) {
@@ -138,7 +174,18 @@ router.post("/create", async (req, res) => {
 // Get all chat rooms
 router.get("/", async (req, res) => {
   try {
-    const rooms = await ChatRoom.find()
+    const { memberId } = req.query;
+    const query = {};
+
+    if (memberId) {
+      if (!isValidObjectId(memberId)) {
+        return res.status(400).json({ message: "Invalid memberId" });
+      }
+
+      query.members = memberId;
+    }
+
+    const rooms = await ChatRoom.find(query)
       .populate("createdBy", "username email")
       .populate("members", "username email onlineStatus createdAt");
     res.json(rooms);
@@ -158,6 +205,10 @@ router.post("/:roomId/members", async (req, res) => {
     const result = await addMemberToRoom(req.params.roomId, userId, actorId);
     if (result.error) {
       return res.status(result.error.status).json({ message: result.error.message });
+    }
+
+    if (result.changed && result.room) {
+      emitRoomMembershipChanged(req.app.get("io"), result.room, "member_added");
     }
 
     return res.json({
@@ -182,6 +233,10 @@ router.post("/:roomId/addMember", async (req, res) => {
       return res.status(result.error.status).json({ message: result.error.message });
     }
 
+    if (result.changed && result.room) {
+      emitRoomMembershipChanged(req.app.get("io"), result.room, "member_added");
+    }
+
     return res.json({
       message: result.changed ? "Member added successfully" : "Member already in room",
       room: result.room,
@@ -200,6 +255,11 @@ router.delete("/:roomId/members/:memberId", async (req, res) => {
     const result = await removeMemberFromRoom(roomId, memberId, actorId);
     if (result.error) {
       return res.status(result.error.status).json({ message: result.error.message });
+    }
+
+    if (result.changed && result.room) {
+      emitRoomMembershipChanged(req.app.get("io"), result.room, "member_removed");
+      emitRoomRemoved(req.app.get("io"), roomId, [memberId], "member_removed");
     }
 
     return res.json({ message: "Member removed successfully", room: result.room });
@@ -241,6 +301,8 @@ router.delete("/:roomId", async (req, res) => {
     if (!room) {
       return res.status(404).json({ message: "Room not found" });
     }
+
+    emitRoomRemoved(req.app.get("io"), room._id, room.members || [], "deleted");
 
     res.json({ message: "Room deleted successfully", room });
   } catch (err) {

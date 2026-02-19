@@ -32,6 +32,11 @@ const messageSchema = new mongoose.Schema({
     enum: ["AES", "RSA", "none"], 
     default: "AES" 
   },
+  replyTo: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Message",
+    default: null
+  },
   reactions: [
     {
       user: {
