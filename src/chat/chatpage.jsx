@@ -12,12 +12,62 @@ import "./chatpage.css";
 const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || "http://localhost:5000").replace(/\/$/, "");
 const MESSAGE_POLL_INTERVAL_MS = 2500;
+const DEFAULT_WEBRTC_ICE_SERVERS = [
+  {
+    urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"],
+  },
+  {
+    urls: ["stun:openrelay.metered.ca:80"],
+  },
+  {
+    urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443", "turns:openrelay.metered.ca:443"],
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+];
+
+function normalizeIceServerConfig(rawServer) {
+  if (!rawServer || typeof rawServer !== "object") {
+    return null;
+  }
+
+  const urls = (Array.isArray(rawServer.urls) ? rawServer.urls : [rawServer.urls])
+    .map((url) => String(url || "").trim())
+    .filter(Boolean);
+
+  if (urls.length === 0) {
+    return null;
+  }
+
+  const username = String(rawServer.username || "").trim();
+  const credential = String(rawServer.credential || "").trim();
+
+  return {
+    urls,
+    ...(username ? { username } : {}),
+    ...(credential ? { credential } : {}),
+  };
+}
+
+function parseIceServersFromEnv() {
+  const rawIceServers = String(import.meta.env.VITE_WEBRTC_ICE_SERVERS || "").trim();
+  if (!rawIceServers) {
+    return DEFAULT_WEBRTC_ICE_SERVERS;
+  }
+
+  try {
+    const parsed = JSON.parse(rawIceServers);
+    const normalized = (Array.isArray(parsed) ? parsed : [parsed]).map(normalizeIceServerConfig).filter(Boolean);
+    return normalized.length > 0 ? normalized : DEFAULT_WEBRTC_ICE_SERVERS;
+  } catch (error) {
+    console.error("Invalid VITE_WEBRTC_ICE_SERVERS value. Falling back to default ICE servers.", error);
+    return DEFAULT_WEBRTC_ICE_SERVERS;
+  }
+}
+
 const WEBRTC_CONFIGURATION = {
-  iceServers: [
-    {
-      urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"],
-    },
-  ],
+  iceServers: parseIceServersFromEnv(),
+  iceCandidatePoolSize: 10,
 };
 
 const INITIAL_CALL_STATE = {
@@ -35,6 +85,8 @@ const CALL_STATUS_LABELS = {
   connecting: "Connecting...",
   connected: "In call",
 };
+const MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024;
+const ATTACHMENT_PAYLOAD_KIND = "chat_attachment";
 
 function normalizeCallType(callType) {
   return callType === "video" ? "video" : "audio";
@@ -42,6 +94,52 @@ function normalizeCallType(callType) {
 
 function buildCallId(userId = "user") {
   return `${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeSessionDescription(description) {
+  if (!description || typeof description !== "object") {
+    return null;
+  }
+
+  const type = description.type === "offer" || description.type === "answer" ? description.type : "";
+  const sdp = typeof description.sdp === "string" ? description.sdp : "";
+  if (!type || !sdp) {
+    return null;
+  }
+
+  return { type, sdp };
+}
+
+function normalizeIceCandidatePayload(candidate) {
+  if (!candidate) {
+    return null;
+  }
+
+  const serializedCandidate = typeof candidate.toJSON === "function" ? candidate.toJSON() : candidate;
+  if (!serializedCandidate || typeof serializedCandidate !== "object") {
+    return null;
+  }
+
+  const candidateValue = String(serializedCandidate.candidate || "").trim();
+  if (!candidateValue) {
+    return null;
+  }
+
+  const normalizedCandidate = { candidate: candidateValue };
+
+  if (typeof serializedCandidate.sdpMid === "string") {
+    normalizedCandidate.sdpMid = serializedCandidate.sdpMid;
+  }
+
+  if (typeof serializedCandidate.sdpMLineIndex === "number") {
+    normalizedCandidate.sdpMLineIndex = serializedCandidate.sdpMLineIndex;
+  }
+
+  if (typeof serializedCandidate.usernameFragment === "string") {
+    normalizedCandidate.usernameFragment = serializedCandidate.usernameFragment;
+  }
+
+  return normalizedCandidate;
 }
 
 function toId(value) {
@@ -79,13 +177,80 @@ function buildDmNotificationKey(userId) {
   return `dm:${userId}`;
 }
 
+function parseAttachmentPayload(rawText) {
+  const text = String(rawText || "").trim();
+  if (!text) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(text);
+    if (
+      !parsed ||
+      parsed.kind !== ATTACHMENT_PAYLOAD_KIND ||
+      typeof parsed.dataUrl !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      name: String(parsed.name || "attachment"),
+      mimeType: String(parsed.mimeType || ""),
+      size: Number(parsed.size) || 0,
+      dataUrl: parsed.dataUrl,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function getNotificationPreview(rawText) {
+  const attachment = parseAttachmentPayload(rawText);
+  if (attachment) {
+    const prefix = attachment.mimeType.startsWith("image/") ? "Image" : "File";
+    return `${prefix}: ${attachment.name}`;
+  }
+
   const text = String(rawText || "").trim();
   if (!text) {
     return "New message";
   }
 
   return text.length > 90 ? `${text.slice(0, 90)}...` : text;
+}
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+
+  const units = ["B", "KB", "MB", "GB"];
+  let size = bytes;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  const precision = size >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${size.toFixed(precision)} ${units[unitIndex]}`;
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      resolve(String(reader.result || ""));
+    };
+
+    reader.onerror = () => {
+      reject(reader.error || new Error("Failed to read file"));
+    };
+
+    reader.readAsDataURL(file);
+  });
 }
 
 function getUserDisplayName(user) {
@@ -319,6 +484,21 @@ function EmojiIcon() {
   );
 }
 
+function AttachmentIcon() {
+  return (
+    <svg className="header-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M15.5 6.5 8.6 13.4a3.1 3.1 0 1 0 4.4 4.4l7-7a5 5 0 0 0-7.1-7.1l-7.2 7.2a7 7 0 0 0 9.9 9.9l5.8-5.8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function PhoneIcon() {
   return (
     <svg className="header-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -377,6 +557,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [activeTab, setActiveTab] = useState("chats");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [isSendingAttachment, setIsSendingAttachment] = useState(false);
   const [userFollowStatus, setUserFollowStatus] = useState({});
   const [showRoomInfo, setShowRoomInfo] = useState(false);
   const [roomError, setRoomError] = useState("");
@@ -413,6 +594,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   const messageInputRef = useRef(null);
   const emojiTriggerWrapRef = useRef(null);
   const emojiToggleButtonRef = useRef(null);
+  const fileInputRef = useRef(null);
   const socketRef = useRef(null);
   const joinedConversationRef = useRef(null);
   const wasEmojiOpenRef = useRef(false);
@@ -724,14 +906,15 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       const peerConnection = new RTCPeerConnection(WEBRTC_CONFIGURATION);
 
       peerConnection.onicecandidate = (event) => {
-        if (!event.candidate || !targetUserId) {
+        const normalizedCandidate = normalizeIceCandidatePayload(event.candidate);
+        if (!normalizedCandidate || !targetUserId) {
           return;
         }
 
         socket.emit("call:ice-candidate", {
           toUserId: targetUserId,
           callId,
-          candidate: event.candidate,
+          candidate: normalizedCandidate,
         });
       };
 
@@ -755,13 +938,34 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         }
 
         if (state === "failed") {
-          endActiveCall({ notifyPeer: false, reason: "failed", errorMessage: "Call connection failed." });
+          endActiveCall({
+            notifyPeer: false,
+            reason: "failed",
+            errorMessage: "Call connection failed. Check your network or TURN server settings.",
+          });
           return;
         }
 
-        if (state === "closed" || state === "disconnected") {
+        if (state === "disconnected") {
+          setCallState((previous) =>
+            previous.status === "connected" ? { ...previous, status: "connecting" } : previous,
+          );
+          return;
+        }
+
+        if (state === "closed") {
           endActiveCall({ notifyPeer: false, reason: state });
         }
+      };
+
+      peerConnection.onicecandidateerror = (event) => {
+        console.error("ICE candidate error:", {
+          address: event.address,
+          port: event.port,
+          url: event.url,
+          errorCode: event.errorCode,
+          errorText: event.errorText,
+        });
       };
 
       peerConnectionRef.current = peerConnection;
@@ -827,12 +1031,16 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
 
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
+        const normalizedOffer = normalizeSessionDescription(peerConnection.localDescription || offer);
+        if (!normalizedOffer) {
+          throw new Error("Unable to create call offer.");
+        }
 
         socketRef.current?.emit("call:offer", {
           toUserId: peerUserId,
           callType,
           callId,
-          offer,
+          offer: normalizedOffer,
           fromUserName: userName || "",
         });
 
@@ -876,16 +1084,25 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         error: "",
       });
 
-      await peerConnection.setRemoteDescription(offer);
+      const normalizedOffer = normalizeSessionDescription(offer);
+      if (!normalizedOffer) {
+        throw new Error("Invalid call offer.");
+      }
+
+      await peerConnection.setRemoteDescription(normalizedOffer);
       await flushQueuedIceCandidates();
 
       const answer = await peerConnection.createAnswer();
       await peerConnection.setLocalDescription(answer);
+      const normalizedAnswer = normalizeSessionDescription(peerConnection.localDescription || answer);
+      if (!normalizedAnswer) {
+        throw new Error("Unable to create call answer.");
+      }
 
       socketRef.current?.emit("call:answer", {
         toUserId: fromUserId,
         callId,
-        answer,
+        answer: normalizedAnswer,
       });
 
       pendingIncomingCallRef.current = null;
@@ -1196,7 +1413,8 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
 
     const onCallOffer = (payload = {}) => {
       const fromUserId = payload?.fromUserId ? String(payload.fromUserId) : "";
-      if (!fromUserId || !payload?.offer) {
+      const normalizedOffer = normalizeSessionDescription(payload?.offer);
+      if (!fromUserId || !normalizedOffer) {
         return;
       }
 
@@ -1220,7 +1438,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         fromUserId,
         callType: incomingCallType,
         callId: incomingCallId,
-        offer: payload.offer,
+        offer: normalizedOffer,
         peerName,
       };
 
@@ -1244,12 +1462,13 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       }
 
       const peerConnection = peerConnectionRef.current;
-      if (!peerConnection || !payload?.answer) {
+      const normalizedAnswer = normalizeSessionDescription(payload?.answer);
+      if (!peerConnection || !normalizedAnswer) {
         return;
       }
 
       try {
-        await peerConnection.setRemoteDescription(payload.answer);
+        await peerConnection.setRemoteDescription(normalizedAnswer);
         await flushQueuedIceCandidates();
         setCallState((previous) =>
           previous.status === "incoming" ? previous : { ...previous, status: "connecting" },
@@ -1261,7 +1480,8 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     };
 
     const onCallIceCandidate = async (payload = {}) => {
-      if (!payload?.candidate) {
+      const normalizedCandidate = normalizeIceCandidatePayload(payload?.candidate);
+      if (!normalizedCandidate) {
         return;
       }
 
@@ -1270,7 +1490,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       }
 
       try {
-        const candidate = new RTCIceCandidate(payload.candidate);
+        const candidate = new RTCIceCandidate(normalizedCandidate);
         const peerConnection = peerConnectionRef.current;
 
         if (!peerConnection || !peerConnection.remoteDescription) {
@@ -1632,46 +1852,105 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     });
   }, []);
 
+  const sendMessagePayload = useCallback(
+    async ({ messageContent, messageType = "text" }) => {
+      const isDirectMessageLocked =
+        Boolean(selectedUser?._id) &&
+        (userFollowStatus[selectedUser._id] || "not_following") !== "following";
+      const targetConversationId = selectedRoom?._id || selectedUser?._id;
+
+      if (!messageContent || !targetConversationId || isDirectMessageLocked || !currentUserId) {
+        return false;
+      }
+
+      await axios.post(`${API_BASE_URL}/api/messages/send`, {
+        senderUserId: currentUserId,
+        receiverUserIdOrRoomId: targetConversationId,
+        messageContent,
+        messageType,
+        replyToMessageId: replyToMessage?._id || null,
+      });
+
+      setShowEmojiPicker(false);
+      setReplyToMessage(null);
+      await fetchMessages();
+      return true;
+    },
+    [currentUserId, fetchMessages, replyToMessage?._id, selectedRoom, selectedUser, userFollowStatus],
+  );
+
   const handleSendMessage = useCallback(async () => {
     const trimmedMessage = newMessage.trim();
-    const isDirectMessageLocked =
-      Boolean(selectedUser?._id) &&
-      (userFollowStatus[selectedUser._id] || "not_following") !== "following";
-
-    if (!trimmedMessage || (!selectedRoom && !selectedUser) || isDirectMessageLocked) {
+    if (!trimmedMessage) {
       return;
     }
 
     try {
-      await axios.post(`${API_BASE_URL}/api/messages/send`, {
-        senderUserId: currentUserId,
-        receiverUserIdOrRoomId: selectedRoom?._id || selectedUser?._id,
+      const sent = await sendMessagePayload({
         messageContent: trimmedMessage,
         messageType: "text",
-        replyToMessageId: replyToMessage?._id || null,
       });
+      if (!sent) {
+        return;
+      }
 
       setNewMessage("");
-      setShowEmojiPicker(false);
-      setReplyToMessage(null);
 
       if (messageInputRef.current) {
         messageInputRef.current.style.height = "auto";
       }
-
-      await fetchMessages();
     } catch (error) {
       console.error("Failed to send message:", error);
     }
-  }, [
-    currentUserId,
-    fetchMessages,
-    newMessage,
-    replyToMessage?._id,
-    selectedRoom,
-    selectedUser,
-    userFollowStatus,
-  ]);
+  }, [newMessage, sendMessagePayload]);
+
+  const openFilePicker = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleFileSelected = useCallback(
+    async (event) => {
+      const selectedFile = event.target.files?.[0];
+      event.target.value = "";
+
+      if (!selectedFile) {
+        return;
+      }
+
+      if (selectedFile.size > MAX_ATTACHMENT_SIZE_BYTES) {
+        alert(`File is too large. Maximum allowed size is ${formatFileSize(MAX_ATTACHMENT_SIZE_BYTES)}.`);
+        return;
+      }
+
+      try {
+        setIsSendingAttachment(true);
+
+        const dataUrl = await readFileAsDataUrl(selectedFile);
+        if (!dataUrl) {
+          throw new Error("File payload unavailable");
+        }
+
+        const attachmentPayload = JSON.stringify({
+          kind: ATTACHMENT_PAYLOAD_KIND,
+          name: selectedFile.name || "attachment",
+          mimeType: selectedFile.type || "application/octet-stream",
+          size: selectedFile.size || 0,
+          dataUrl,
+        });
+
+        await sendMessagePayload({
+          messageContent: attachmentPayload,
+          messageType: selectedFile.type.startsWith("image/") ? "image" : "file",
+        });
+      } catch (error) {
+        console.error("Failed to send file:", error);
+        alert("Failed to upload file");
+      } finally {
+        setIsSendingAttachment(false);
+      }
+    },
+    [sendMessagePayload],
+  );
 
   const handleReactToMessage = useCallback(
     async (messageId, emoji) => {
@@ -2445,7 +2724,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
                   className="icon-btn emoji-open-btn"
                   type="button"
                   onClick={toggleEmojiPicker}
-                  disabled={messageInputDisabled}
+                  disabled={messageInputDisabled || isSendingAttachment}
                   aria-label="Open emoji picker"
                   aria-expanded={showEmojiPicker}
                 >
@@ -2459,6 +2738,24 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
                   onEmojiSelect={handleInsertEmoji}
                 />
               </div>
+
+              <button
+                className="icon-btn upload-file-btn"
+                type="button"
+                onClick={openFilePicker}
+                disabled={messageInputDisabled || isSendingAttachment}
+                aria-label="Upload file"
+                title="Upload file"
+              >
+                <AttachmentIcon />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="chat-file-input"
+                onChange={handleFileSelected}
+                disabled={messageInputDisabled || isSendingAttachment}
+              />
 
               <textarea
                 ref={messageInputRef}
@@ -2479,7 +2776,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
               <button
                 className="send-btn"
                 onClick={handleSendMessage}
-                disabled={!newMessage.trim() || messageInputDisabled}
+                disabled={!newMessage.trim() || messageInputDisabled || isSendingAttachment}
               >
                 Send
               </button>
