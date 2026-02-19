@@ -91,7 +91,8 @@ router.post("/login", async (req, res) => {
         _id: user._id,
         username: user.username,
         email: user.email,
-        onlineStatus: user.onlineStatus
+        onlineStatus: user.onlineStatus,
+        e2ePublicKey: user.e2ePublicKey || ""
       }
     });
   } catch (error) {
@@ -141,7 +142,7 @@ router.put("/:userId/status", async (req, res) => {
 // Update user profile
 router.put("/:userId/update", async (req, res) => {
   try {
-    const { bio, avatarUrl, username, phoneNumber } = req.body;
+    const { bio, avatarUrl, username, phoneNumber, e2ePublicKey } = req.body;
     const userId = req.params.userId;
 
     // Optional: Check if username is taken if it's being changed
@@ -159,7 +160,8 @@ router.put("/:userId/update", async (req, res) => {
           ...(bio !== undefined && { bio }),
           ...(avatarUrl !== undefined && { avatarUrl }),
           ...(username !== undefined && { username }),
-          ...(phoneNumber !== undefined && { phoneNumber })
+          ...(phoneNumber !== undefined && { phoneNumber }),
+          ...(e2ePublicKey !== undefined && { e2ePublicKey: String(e2ePublicKey || "") })
         }
       },
       { new: true }

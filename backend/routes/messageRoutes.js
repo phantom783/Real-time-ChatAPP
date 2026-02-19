@@ -358,14 +358,21 @@ router.post("/send", async (req, res) => {
         .json({ message: replyValidationResult.error.message });
     }
 
+    const normalizedIsEncrypted = Boolean(isEncrypted);
+    const requestedEncryptionMethod = String(encryptionMethod || "").trim();
+    const allowedEncryptionMethods = new Set(["AES", "RSA", "E2EE-AES-GCM", "none"]);
+    const normalizedEncryptionMethod = normalizedIsEncrypted
+      ? (allowedEncryptionMethods.has(requestedEncryptionMethod) ? requestedEncryptionMethod : "AES")
+      : "none";
+
     const newMessage = new Message({
       senderUserId,
       receiverUserIdOrRoomId,
       messageContent,
       messageType: messageType || "text",
       readStatus: false,
-      isEncrypted: isEncrypted !== undefined ? isEncrypted : true,
-      encryptionMethod: encryptionMethod || "AES",
+      isEncrypted: normalizedIsEncrypted,
+      encryptionMethod: normalizedEncryptionMethod,
       replyTo: replyValidationResult.replyToMessageId,
       reactions: [],
     });

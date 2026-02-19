@@ -7,6 +7,13 @@ import ProfileViewModal from "../components/ProfileViewModal";
 import EmojiPickerPanel from "../components/chat/EmojiPickerPanel";
 import MessageItem from "../components/chat/MessageItem";
 import { clearAuthSession, getAuthSession, saveAuthSession } from "../utils/authSession";
+import {
+  decryptDirectMessagePayload,
+  encryptDirectMessagePayload,
+  ensureLocalE2EEIdentity,
+  isE2EEncryptedPayload,
+  isWebCryptoSupported,
+} from "../utils/e2ee";
 import "./chatpage.css";
 
 const API_BASE_URL =
@@ -87,6 +94,7 @@ const CALL_STATUS_LABELS = {
 };
 const MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024;
 const ATTACHMENT_PAYLOAD_KIND = "chat_attachment";
+const E2EE_DECRYPTION_FALLBACK = "[Unable to decrypt message]";
 
 function normalizeCallType(callType) {
   return callType === "video" ? "video" : "audio";
@@ -614,6 +622,9 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   const processedRealtimeMessageIdsRef = useRef(new Set());
   const notificationPermissionRequestedRef = useRef(false);
   const notificationAudioContextRef = useRef(null);
+  const e2eePrivateKeyRef = useRef("");
+  const e2eePublicKeyRef = useRef("");
+  const e2eeInitializationWarningShownRef = useRef(false);
 
   const [localTheme, setLocalTheme] = useState(() => localStorage.getItem("theme") || "light");
   const theme = propsTheme !== undefined ? propsTheme : localTheme;
@@ -811,6 +822,144 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     });
   }, []);
 
+  const decryptMessageContentForUi = useCallback(
+    async (messageContent, senderUserId, isEncrypted) => {
+      const rawMessageContent = String(messageContent || "");
+      if (!rawMessageContent) {
+        return "";
+      }
+
+      if (!isEncrypted || !isE2EEncryptedPayload(rawMessageContent)) {
+        return rawMessageContent;
+      }
+
+      if (!currentUserId || !e2eePrivateKeyRef.current) {
+        return E2EE_DECRYPTION_FALLBACK;
+      }
+
+      try {
+        return await decryptDirectMessagePayload({
+          payloadText: rawMessageContent,
+          currentUserId,
+          senderUserId: toId(senderUserId),
+          privateKeyBase64: e2eePrivateKeyRef.current,
+        });
+      } catch (error) {
+        console.error("Failed to decrypt message payload:", error);
+        return E2EE_DECRYPTION_FALLBACK;
+      }
+    },
+    [currentUserId],
+  );
+
+  const hydrateMessageForUi = useCallback(
+    async (message) => {
+      if (!message || typeof message !== "object") {
+        return null;
+      }
+
+      const decryptedMessageContent = await decryptMessageContentForUi(
+        message.messageContent,
+        message.senderUserId,
+        message.isEncrypted,
+      );
+
+      let normalizedReply = normalizeReplyPreview(message.replyTo);
+      if (message.replyTo && typeof message.replyTo === "object") {
+        const decryptedReplyContent = await decryptMessageContentForUi(
+          message.replyTo.messageContent,
+          message.replyTo.senderUserId,
+          message.replyTo.isEncrypted ?? message.isEncrypted,
+        );
+
+        normalizedReply = {
+          _id: toId(message.replyTo),
+          senderUserId: message.replyTo.senderUserId || null,
+          messageContent: String(decryptedReplyContent ?? ""),
+          createdAt: message.replyTo.createdAt || "",
+        };
+      }
+
+      return {
+        ...message,
+        messageContent: String(decryptedMessageContent ?? ""),
+        reactions: Array.isArray(message.reactions) ? message.reactions : [],
+        replyTo: normalizedReply,
+      };
+    },
+    [decryptMessageContentForUi],
+  );
+
+  const hydrateMessageListForUi = useCallback(
+    async (messages) => {
+      const messageList = Array.isArray(messages) ? messages : [];
+      const hydratedMessages = await Promise.all(messageList.map((message) => hydrateMessageForUi(message)));
+      return hydratedMessages.filter(Boolean);
+    },
+    [hydrateMessageForUi],
+  );
+
+  useEffect(() => {
+    if (!currentUserId || !token) {
+      e2eePrivateKeyRef.current = "";
+      e2eePublicKeyRef.current = "";
+      return;
+    }
+
+    if (!isWebCryptoSupported()) {
+      if (!e2eeInitializationWarningShownRef.current) {
+        console.warn("Web Crypto is not available. Direct-message E2EE is disabled.");
+        e2eeInitializationWarningShownRef.current = true;
+      }
+      e2eePrivateKeyRef.current = "";
+      e2eePublicKeyRef.current = "";
+      return;
+    }
+
+    let isCancelled = false;
+
+    const initializeE2EEIdentity = async () => {
+      try {
+        const localIdentity = await ensureLocalE2EEIdentity(currentUserId);
+        if (isCancelled) {
+          return;
+        }
+
+        e2eePrivateKeyRef.current = localIdentity.privateKey;
+        e2eePublicKeyRef.current = localIdentity.publicKey;
+
+        const profilePublicKey = String(currentUserProfile?.e2ePublicKey || "").trim();
+        if (localIdentity.publicKey && localIdentity.publicKey !== profilePublicKey) {
+          await axios.put(`${API_BASE_URL}/api/users/${currentUserId}/update`, {
+            e2ePublicKey: localIdentity.publicKey,
+          });
+
+          if (isCancelled) {
+            return;
+          }
+
+          setCurrentUserProfile((previous) =>
+            normalizeUserForUi({
+              ...(previous || {}),
+              _id: currentUserId,
+              e2ePublicKey: localIdentity.publicKey,
+            }),
+          );
+        }
+      } catch (error) {
+        console.error("Failed to initialize E2EE identity:", error);
+        e2eePrivateKeyRef.current = "";
+        e2eePublicKeyRef.current = "";
+      }
+    };
+
+    initializeE2EEIdentity();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentUserId, currentUserProfile?.e2ePublicKey, token]);
+
   const resetCallSession = useCallback((errorMessage = "", options = {}) => {
     const { skipStateUpdate = false } = options;
 
@@ -819,6 +968,8 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         peerConnectionRef.current.ontrack = null;
         peerConnectionRef.current.onicecandidate = null;
         peerConnectionRef.current.onconnectionstatechange = null;
+        peerConnectionRef.current.oniceconnectionstatechange = null;
+        peerConnectionRef.current.onicecandidateerror = null;
         peerConnectionRef.current.close();
       } catch {
         // no-op
@@ -918,14 +1069,22 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       };
 
       peerConnection.ontrack = (event) => {
-        const [stream] = event.streams;
-        if (!stream) {
+        const [streamFromEvent] = event.streams;
+        if (streamFromEvent) {
+          remoteStreamRef.current = streamFromEvent;
+          setRemoteStream(streamFromEvent);
           return;
         }
 
-        remoteStreamRef.current = stream;
-        setRemoteStream(stream);
-        setCallState((previous) => ({ ...previous, status: "connected" }));
+        // Safari and some WebRTC stacks may emit tracks without attached streams.
+        if (!remoteStreamRef.current) {
+          remoteStreamRef.current = new MediaStream();
+        }
+
+        if (event.track) {
+          remoteStreamRef.current.addTrack(event.track);
+          setRemoteStream(new MediaStream(remoteStreamRef.current.getTracks()));
+        }
       };
 
       peerConnection.onconnectionstatechange = () => {
@@ -1324,7 +1483,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       }
     };
 
-    const onNewMessage = (payload = {}) => {
+    const onNewMessage = async (payload = {}) => {
       const incomingMessage = payload?.data || payload?.message || payload;
       const messageId = incomingMessage?._id ? String(incomingMessage._id) : "";
 
@@ -1342,18 +1501,23 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         processedRealtimeMessageIds.delete(oldestId);
       }
 
-      const notificationKey = getMessageNotificationKey(incomingMessage);
+      const hydratedMessage = await hydrateMessageForUi(incomingMessage);
+      if (!hydratedMessage) {
+        return;
+      }
+
+      const notificationKey = getMessageNotificationKey(hydratedMessage);
       if (!notificationKey) {
         return;
       }
 
-      const senderName = getUserDisplayName(incomingMessage.senderUserId);
-      const previewText = getNotificationPreview(incomingMessage.messageContent);
+      const senderName = getUserDisplayName(hydratedMessage.senderUserId);
+      const previewText = getNotificationPreview(hydratedMessage.messageContent);
       const isActiveConversation = notificationKey === activeNotificationKeyRef.current;
       const isPageFocused = document.visibilityState === "visible" && document.hasFocus();
 
       if (isActiveConversation) {
-        appendRealtimeMessage(incomingMessage);
+        appendRealtimeMessage(hydratedMessage);
 
         if (!isPageFocused) {
           playNotificationSound();
@@ -1576,6 +1740,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     endActiveCall,
     flushQueuedIceCandidates,
     getMessageNotificationKey,
+    hydrateMessageForUi,
     playNotificationSound,
     resolvePeerName,
     showBrowserNotification,
@@ -1623,7 +1788,8 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
   const fetchMessages = useCallback(async () => {
     if (selectedRoom?._id) {
       const response = await axios.get(`${API_BASE_URL}/api/messages/${selectedRoom._id}`);
-      setMessages((previous) => reconcileMessages(previous, response.data || []));
+      const hydratedMessages = await hydrateMessageListForUi(response.data || []);
+      setMessages((previous) => reconcileMessages(previous, hydratedMessages));
       return;
     }
 
@@ -1631,9 +1797,10 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       const response = await axios.get(
         `${API_BASE_URL}/api/messages/between/${currentUserId}/${selectedUser._id}`,
       );
-      setMessages((previous) => reconcileMessages(previous, response.data || []));
+      const hydratedMessages = await hydrateMessageListForUi(response.data || []);
+      setMessages((previous) => reconcileMessages(previous, hydratedMessages));
     }
-  }, [currentUserId, selectedRoom, selectedUser]);
+  }, [currentUserId, hydrateMessageListForUi, selectedRoom, selectedUser]);
 
   useEffect(() => {
     if (!selectedRoom && !selectedUser) {
@@ -1870,31 +2037,113 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
     });
   }, []);
 
+  const ensurePeerE2EEPublicKey = useCallback(async (peerUser) => {
+    const peerUserId = toId(peerUser);
+    if (!peerUserId) {
+      return "";
+    }
+
+    const inlinePublicKey = String(peerUser?.e2ePublicKey || "").trim();
+    if (inlinePublicKey) {
+      return inlinePublicKey;
+    }
+
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/users/${peerUserId}`);
+      const fetchedPublicKey = String(response.data?.e2ePublicKey || "").trim();
+      if (!fetchedPublicKey) {
+        return "";
+      }
+
+      setUsers((previous) =>
+        previous.map((user) =>
+          String(user._id) === String(peerUserId)
+            ? normalizeUserForUi({ ...user, e2ePublicKey: fetchedPublicKey })
+            : user,
+        ),
+      );
+      setSelectedUser((previous) =>
+        previous && String(previous._id) === String(peerUserId)
+          ? normalizeUserForUi({ ...previous, e2ePublicKey: fetchedPublicKey })
+          : previous,
+      );
+
+      return fetchedPublicKey;
+    } catch (error) {
+      console.error("Failed to fetch peer E2EE key:", error);
+      return "";
+    }
+  }, []);
+
   const sendMessagePayload = useCallback(
     async ({ messageContent, messageType = "text" }) => {
       const isDirectMessageLocked =
         Boolean(selectedUser?._id) &&
         (userFollowStatus[selectedUser._id] || "not_following") !== "following";
       const targetConversationId = selectedRoom?._id || selectedUser?._id;
+      const rawMessageContent = String(messageContent || "");
+      const isDirectConversation = Boolean(selectedUser?._id) && !selectedRoom?._id;
 
-      if (!messageContent || !targetConversationId || isDirectMessageLocked || !currentUserId) {
+      if (!rawMessageContent || !targetConversationId || isDirectMessageLocked || !currentUserId) {
         return false;
       }
 
-      await axios.post(`${API_BASE_URL}/api/messages/send`, {
+      let outgoingMessageContent = rawMessageContent;
+      let outgoingIsEncrypted = false;
+      let outgoingEncryptionMethod = "none";
+
+      if (isDirectConversation) {
+        if (!isWebCryptoSupported()) {
+          throw new Error("This browser does not support end-to-end encryption.");
+        }
+
+        const senderPrivateKey = e2eePrivateKeyRef.current;
+        const senderPublicKey = e2eePublicKeyRef.current;
+        const recipientPublicKey = await ensurePeerE2EEPublicKey(selectedUser);
+
+        if (!senderPrivateKey || !senderPublicKey || !recipientPublicKey) {
+          throw new Error("Encryption keys are not ready. Ask both users to refresh and try again.");
+        }
+
+        outgoingMessageContent = await encryptDirectMessagePayload({
+          plainText: rawMessageContent,
+          senderPrivateKeyBase64: senderPrivateKey,
+          senderPublicKeyBase64: senderPublicKey,
+          recipientPublicKeyBase64: recipientPublicKey,
+        });
+        outgoingIsEncrypted = true;
+        outgoingEncryptionMethod = "E2EE-AES-GCM";
+      }
+
+      const response = await axios.post(`${API_BASE_URL}/api/messages/send`, {
         senderUserId: currentUserId,
         receiverUserIdOrRoomId: targetConversationId,
-        messageContent,
+        messageContent: outgoingMessageContent,
         messageType,
         replyToMessageId: replyToMessage?._id || null,
+        isEncrypted: outgoingIsEncrypted,
+        encryptionMethod: outgoingEncryptionMethod,
       });
+
+      const createdMessage = await hydrateMessageForUi(response.data?.data);
+      if (createdMessage?._id) {
+        appendRealtimeMessage(createdMessage);
+      }
 
       setShowEmojiPicker(false);
       setReplyToMessage(null);
-      await fetchMessages();
       return true;
     },
-    [currentUserId, fetchMessages, replyToMessage?._id, selectedRoom, selectedUser, userFollowStatus],
+    [
+      appendRealtimeMessage,
+      currentUserId,
+      ensurePeerE2EEPublicKey,
+      hydrateMessageForUi,
+      replyToMessage?._id,
+      selectedRoom,
+      selectedUser,
+      userFollowStatus,
+    ],
   );
 
   const handleSendMessage = useCallback(async () => {
@@ -1919,6 +2168,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
       }
     } catch (error) {
       console.error("Failed to send message:", error);
+      alert(error.response?.data?.message || error.message || "Failed to send message");
     }
   }, [newMessage, sendMessagePayload]);
 
@@ -1962,7 +2212,7 @@ function ChatPage({ theme: propsTheme, setTheme: propsSetTheme }) {
         });
       } catch (error) {
         console.error("Failed to send file:", error);
-        alert("Failed to upload file");
+        alert(error.response?.data?.message || error.message || "Failed to upload file");
       } finally {
         setIsSendingAttachment(false);
       }

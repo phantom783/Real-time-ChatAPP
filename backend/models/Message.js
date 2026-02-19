@@ -25,12 +25,12 @@ const messageSchema = new mongoose.Schema({
   },
   isEncrypted: { 
     type: Boolean, 
-    default: true 
+    default: false 
   },
   encryptionMethod: { 
     type: String, 
-    enum: ["AES", "RSA", "none"], 
-    default: "AES" 
+    enum: ["AES", "RSA", "E2EE-AES-GCM", "none"], 
+    default: "none" 
   },
   replyTo: {
     type: mongoose.Schema.Types.ObjectId,

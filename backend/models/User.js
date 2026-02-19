@@ -32,6 +32,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: ""
   },
+  e2ePublicKey: {
+    type: String,
+    default: ""
+  },
   followRequests: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: "User"
